@@ -22,10 +22,6 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ApplyMediaUnderstandingResult } from "../../media-understanding/apply.js";
 import type { ExtractedFileImage } from "../../media-understanding/extracted-file-images.js";
-import {
-  buildAgentHookContextChannelFields,
-  buildAgentHookContextIdentityFields,
-} from "../../plugins/hook-agent-context.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
   isModelSelectionLocked,
@@ -138,19 +134,6 @@ function loadLinkUnderstandingApplyRuntime() {
 
 function loadCommandsCoreRuntime() {
   return commandsCoreRuntimeLoader.load();
-}
-
-const hookRunnerGlobalLoader = createLazyImportLoader(
-  () => import("../../plugins/hook-runner-global.js"),
-);
-const originRoutingLoader = createLazyImportLoader(() => import("./origin-routing.js"));
-
-function loadHookRunnerGlobal() {
-  return hookRunnerGlobalLoader.load();
-}
-
-function loadOriginRouting() {
-  return originRoutingLoader.load();
 }
 
 function hasLinkCandidate(ctx: MsgContext): boolean {
@@ -1020,52 +1003,6 @@ export async function getReplyFromConfig(
         thinkingActive || hasExplicitThinkLevel
           ? "off"
           : await runModelState.resolveDefaultReasoningLevel();
-    }
-  }
-
-  // Allow plugins to intercept and return a synthetic reply before the LLM runs.
-  if (!useFastTestBootstrap) {
-    const { getGlobalHookRunner } = await loadHookRunnerGlobal();
-    const hookRunner = getGlobalHookRunner();
-    if (hookRunner?.hasHooks("before_agent_reply")) {
-      const { resolveOriginMessageProvider } = await loadOriginRouting();
-      const hookMessageProvider = resolveOriginMessageProvider({
-        originatingChannel: sessionCtx.OriginatingChannel,
-        provider: sessionCtx.Provider,
-      });
-      const hookChatId =
-        normalizeOptionalString(sessionCtx.NativeChannelId) ??
-        normalizeOptionalString(sessionCtx.ChatId);
-      const hookTrigger = opts?.isHeartbeat ? "heartbeat" : "user";
-      const hookResult = await traceGetReplyPhase("reply.before_agent_reply_hooks", () =>
-        hookRunner.runBeforeAgentReply(
-          { cleanedBody },
-          {
-            agentId,
-            sessionKey: agentSessionKey,
-            sessionId,
-            workspaceDir,
-            trigger: hookTrigger,
-            ...buildAgentHookContextChannelFields({
-              sessionKey: agentSessionKey,
-              messageProvider: hookMessageProvider,
-              currentChannelId: sessionCtx.OriginatingTo ?? ctx.OriginatingTo ?? ctx.To,
-              messageTo: sessionCtx.OriginatingTo ?? ctx.OriginatingTo ?? ctx.To,
-              senderId: sessionCtx.SenderId ?? ctx.SenderId,
-            }),
-            ...buildAgentHookContextIdentityFields({
-              trigger: hookTrigger,
-              senderId: sessionCtx.SenderId,
-              chatId: hookChatId,
-              channelContext: sessionCtx.ChannelContext ?? ctx.ChannelContext,
-            }),
-          },
-        ),
-      );
-      if (hookResult?.handled) {
-        logResolverTiming("completed", "before_agent_reply_hook");
-        return hookResult.reply ?? { text: SILENT_REPLY_TOKEN };
-      }
     }
   }
 
