@@ -11,6 +11,7 @@ import "../components/gateway-url-confirmation.ts";
 import "../components/github-link-hovercard-registration.ts";
 import "../components/login-gate.ts";
 import "../components/macos-titlebar-controls.ts";
+import "../components/onboarding-memory-import.ts";
 import "../components/resizable-divider.ts";
 import "../components/sidebar-update-card.ts";
 import "../components/tooltip.ts";
@@ -1372,6 +1373,12 @@ class OpenClawShell extends OpenClawLightDomElement {
             this.navigate("nodes");
           },
         })}
+        ${this.onboarding
+          ? html`<openclaw-onboarding-memory-import
+              .active=${true}
+              .context=${context}
+            ></openclaw-onboarding-memory-import>`
+          : nothing}
       </div>
     `;
   }
