@@ -1729,7 +1729,7 @@ export const fr: TranslationMap = {
   subtitles: {
     agents: "Espaces de travail, outils, identités.",
     activity: "Résumés d’activité des outils locaux au navigateur.",
-    approvals: "Approbations récentes des opérateurs du terminal.",
+    approvals: "Approbations récentes d’exécution, de plugin et d’agent système.",
     workboard: "File de travail de l’agent et transfert de session.",
     worktrees: "Checkouts de tâches d’agent isolés et instantanés de récupération.",
     channels: "Canaux et paramètres.",
@@ -2718,23 +2718,23 @@ export const fr: TranslationMap = {
   },
   approvalHistory: {
     description:
-      "Approbations d’exécution du terminal, de plugin et d’agent système enregistrées par ce Gateway, de la plus récente à la plus ancienne.",
+      "Approbations d’exécution dans le terminal, de plugin et d’agent système enregistrées par ce Gateway, les plus récentes en premier.",
     loading: "Chargement de l’historique des approbations…",
     loadingMore: "Chargement…",
     loadMore: "Charger davantage",
-    empty: "Aucune approbation du terminal au cours de la période glissante de 30 jours.",
-    retention: "L’historique des approbations couvre une période glissante de 30 jours.",
+    empty: "Aucune approbation traitée dans la fenêtre glissante de 30 jours.",
+    retention: "L’historique des approbations couvre une fenêtre glissante de 30 jours.",
     offline: "Connectez-vous au Gateway pour charger l’historique des approbations.",
     invalidResponse:
       "Le Gateway a renvoyé une réponse non valide pour l’historique des approbations.",
     unknown: "Inconnu",
     notApplicable: "N/A",
     columns: {
-      resolved: "Résolue",
+      resolved: "Traitée",
       kind: "Type",
       request: "Demande",
       decision: "Décision",
-      reason: "Motif du terminal",
+      reason: "Motif de la résolution",
       source: "Agent source / session",
       resolver: "Responsable de la résolution",
     },

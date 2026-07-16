@@ -1711,7 +1711,7 @@ export const pt_BR: TranslationMap = {
   subtitles: {
     agents: "Espaços, ferramentas, identidades.",
     activity: "Resumos de atividade de ferramentas locais do navegador.",
-    approvals: "Aprovações recentes de operadores do terminal.",
+    approvals: "Aprovações recentes de exec, plugin e agente do sistema.",
     workboard: "Fila de trabalho do agente e transferência de sessão.",
     worktrees: "Checkouts isolados de tarefas de agentes e snapshots de recuperação.",
     channels: "Canais e configurações.",
@@ -2679,14 +2679,14 @@ export const pt_BR: TranslationMap = {
   },
   approvalHistory: {
     description:
-      "Aprovações de execução no terminal, plugins e agentes do sistema registradas por este gateway, da mais recente para a mais antiga.",
+      "Aprovações de exec do terminal, plugin e agente do sistema registradas por este gateway, da mais recente para a mais antiga.",
     loading: "Carregando histórico de aprovações…",
     loadingMore: "Carregando…",
     loadMore: "Carregar mais",
-    empty: "Nenhuma aprovação de terminal no período móvel de 30 dias.",
+    empty: "Nenhuma aprovação resolvida no período móvel de 30 dias.",
     retention: "O histórico de aprovações abrange um período móvel de 30 dias.",
     offline: "Conecte-se ao gateway para carregar o histórico de aprovações.",
-    invalidResponse: "O gateway retornou uma resposta inválida para o histórico de aprovações.",
+    invalidResponse: "O gateway retornou uma resposta inválida do histórico de aprovações.",
     unknown: "Desconhecido",
     notApplicable: "N/D",
     columns: {
@@ -2694,12 +2694,12 @@ export const pt_BR: TranslationMap = {
       kind: "Tipo",
       request: "Solicitação",
       decision: "Decisão",
-      reason: "Motivo do terminal",
+      reason: "Motivo da resolução",
       source: "Agente / sessão de origem",
       resolver: "Responsável pela resolução",
     },
     kinds: {
-      exec: "Execução",
+      exec: "Exec",
       plugin: "Plugin",
       systemAgent: "Agente do sistema",
     },
@@ -2707,7 +2707,7 @@ export const pt_BR: TranslationMap = {
       allowed: "Permitida",
       denied: "Negado",
       expired: "Expirado",
-      cancelled: "Cancelada",
+      cancelled: "Cancelado",
     },
     decisions: {
       allowOnce: "Permitir uma vez",
@@ -2716,9 +2716,9 @@ export const pt_BR: TranslationMap = {
     },
     reasons: {
       user: "Decisão do usuário",
-      timeout: "Tempo limite esgotado",
+      timeout: "Tempo limite excedido",
       malformedVerdict: "Veredito malformado",
-      noRoute: "Nenhuma rota",
+      noRoute: "Sem rota",
       runAborted: "Execução interrompida",
       gatewayRestart: "Reinicialização do Gateway",
       storageCorrupt: "Armazenamento corrompido",

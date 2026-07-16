@@ -1727,7 +1727,7 @@ export const it: TranslationMap = {
   subtitles: {
     agents: "Spazi di lavoro, strumenti, identità.",
     activity: "Riepiloghi dell'attività degli strumenti locali al browser.",
-    approvals: "Approvazioni recenti degli operatori del terminale.",
+    approvals: "Approvazioni recenti di esecuzioni, plugin e agenti di sistema.",
     workboard: "Coda di lavoro degli agenti e passaggio di sessione.",
     worktrees: "Checkout isolati delle attività degli agenti e snapshot di ripristino.",
     channels: "Canali e impostazioni.",
@@ -2700,15 +2700,15 @@ export const it: TranslationMap = {
   },
   approvalHistory: {
     description:
-      "Approvazioni per l'esecuzione da terminale, i plugin e gli agenti di sistema registrate da questo Gateway, dalla più recente.",
+      "Approvazioni di esecuzioni nel terminale, plugin e agenti di sistema registrate da questo gateway, dalla più recente.",
     loading: "Caricamento della cronologia delle approvazioni…",
     loadingMore: "Caricamento…",
     loadMore: "Carica altro",
-    empty: "Nessuna approvazione del terminale nel periodo mobile di 30 giorni.",
-    retention: "La cronologia delle approvazioni copre un periodo mobile di 30 giorni.",
-    offline: "Connettiti al Gateway per caricare la cronologia delle approvazioni.",
+    empty: "Nessuna approvazione risolta nella finestra mobile di 30 giorni.",
+    retention: "La cronologia delle approvazioni copre una finestra mobile di 30 giorni.",
+    offline: "Connettiti al gateway per caricare la cronologia delle approvazioni.",
     invalidResponse:
-      "Il Gateway ha restituito una risposta non valida per la cronologia delle approvazioni.",
+      "Il gateway ha restituito una risposta non valida per la cronologia delle approvazioni.",
     unknown: "Sconosciuto",
     notApplicable: "N/D",
     columns: {
@@ -2716,8 +2716,8 @@ export const it: TranslationMap = {
       kind: "Tipo",
       request: "Richiesta",
       decision: "Decisione",
-      reason: "Motivo del terminale",
-      source: "Agente di origine / sessione",
+      reason: "Motivo della risoluzione",
+      source: "Agente / sessione di origine",
       resolver: "Responsabile della risoluzione",
     },
     kinds: {
@@ -2729,7 +2729,7 @@ export const it: TranslationMap = {
       allowed: "Consentita",
       denied: "Negato",
       expired: "Scaduto",
-      cancelled: "Annullata",
+      cancelled: "Annullato",
     },
     decisions: {
       allowOnce: "Consenti una volta",
@@ -2743,7 +2743,7 @@ export const it: TranslationMap = {
       noRoute: "Nessun percorso",
       runAborted: "Esecuzione interrotta",
       gatewayRestart: "Riavvio del Gateway",
-      storageCorrupt: "Archiviazione danneggiata",
+      storageCorrupt: "Archivio danneggiato",
     },
   },
   palette: {

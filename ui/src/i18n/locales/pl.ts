@@ -1718,7 +1718,7 @@ export const pl: TranslationMap = {
   subtitles: {
     agents: "Obszary robocze, narzędzia, tożsamości.",
     activity: "Podsumowania aktywności narzędzi lokalne dla przeglądarki.",
-    approvals: "Ostatnie zatwierdzenia operatora terminala.",
+    approvals: "Ostatnie zatwierdzenia wykonania poleceń, wtyczek i agentów systemowych.",
     workboard: "Kolejka zadań agenta i przekazywanie sesji.",
     worktrees: "Izolowane kopie robocze zadań agentów i migawki do odzyskiwania.",
     channels: "Kanały i ustawienia.",
@@ -2690,11 +2690,11 @@ export const pl: TranslationMap = {
   },
   approvalHistory: {
     description:
-      "Zatwierdzenia wykonania poleceń w terminalu, wtyczek i agentów systemowych zarejestrowane przez ten Gateway, od najnowszych.",
+      "Zatwierdzenia wykonania poleceń terminala, wtyczek i agentów systemowych zarejestrowane przez ten Gateway, od najnowszych.",
     loading: "Wczytywanie historii zatwierdzeń…",
     loadingMore: "Wczytywanie…",
     loadMore: "Wczytaj więcej",
-    empty: "Brak zatwierdzeń terminala w ruchomym 30-dniowym okresie.",
+    empty: "Brak rozstrzygniętych zatwierdzeń w ruchomym 30-dniowym okresie.",
     retention: "Historia zatwierdzeń obejmuje ruchomy 30-dniowy okres.",
     offline: "Połącz się z Gateway, aby wczytać historię zatwierdzeń.",
     invalidResponse: "Gateway zwrócił nieprawidłową odpowiedź dotyczącą historii zatwierdzeń.",
@@ -2705,7 +2705,7 @@ export const pl: TranslationMap = {
       kind: "Rodzaj",
       request: "Żądanie",
       decision: "Decyzja",
-      reason: "Powód użycia terminala",
+      reason: "Powód rozstrzygnięcia",
       source: "Agent źródłowy / sesja",
       resolver: "Osoba rozstrzygająca",
     },
@@ -2715,10 +2715,10 @@ export const pl: TranslationMap = {
       systemAgent: "Agent systemowy",
     },
     statuses: {
-      allowed: "Dozwolone",
+      allowed: "Zezwolono",
       denied: "Odmówiono",
       expired: "Wygasł",
-      cancelled: "Anulowane",
+      cancelled: "Anulowano",
     },
     decisions: {
       allowOnce: "Zezwól raz",
@@ -2728,7 +2728,7 @@ export const pl: TranslationMap = {
     reasons: {
       user: "Decyzja użytkownika",
       timeout: "Upłynął limit czasu",
-      malformedVerdict: "Nieprawidłowo sformułowana decyzja",
+      malformedVerdict: "Nieprawidłowy format werdyktu",
       noRoute: "Brak trasy",
       runAborted: "Wykonanie przerwane",
       gatewayRestart: "Ponowne uruchomienie Gateway",
