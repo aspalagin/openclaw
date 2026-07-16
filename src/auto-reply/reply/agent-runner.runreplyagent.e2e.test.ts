@@ -454,12 +454,12 @@ describe("runReplyAgent active steering", () => {
         return true;
       },
     );
-    const onTurnAdopted = vi.fn(async () => {
+    const onAdopted = vi.fn(async () => {
       events.push("adoption-finalizer");
       throw finalizerError;
     });
     const { run, typing } = createMinimalRun({
-      opts: { onTurnAdopted },
+      opts: { turnAdoptionLifecycle: { onAdopted: onAdopted } },
       isActive: true,
       isStreaming: true,
       shouldSteer: true,
@@ -469,7 +469,7 @@ describe("runReplyAgent active steering", () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(events).toEqual(["transcript-committed", "adoption-finalizer"]);
-    expect(onTurnAdopted).toHaveBeenCalledTimes(1);
+    expect(onAdopted).toHaveBeenCalledTimes(1);
     expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledTimes(1);
     expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
@@ -484,9 +484,9 @@ describe("runReplyAgent active steering", () => {
       target: "none",
       gatewayHealth: "live",
     });
-    const onTurnAdopted = vi.fn();
+    const onAdopted = vi.fn();
     const { run } = createMinimalRun({
-      opts: { onTurnAdopted },
+      opts: { turnAdoptionLifecycle: { onAdopted: onAdopted } },
       isActive: true,
       isStreaming: true,
       shouldSteer: true,
@@ -497,7 +497,7 @@ describe("runReplyAgent active steering", () => {
 
     expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
-    expect(onTurnAdopted).not.toHaveBeenCalled();
+    expect(onAdopted).not.toHaveBeenCalled();
   });
 
   it("admits a rejected steering turn with its completed hook checkpoint", async () => {
@@ -508,14 +508,14 @@ describe("runReplyAgent active steering", () => {
     const sessionStore = { main: sessionEntry };
     const storePath = await createSessionStoreFile(sessionEntry);
     const beforeAgentReply = vi.fn(async () => undefined);
-    const onTurnAdopted = vi.fn(async () => {
+    const onAdopted = vi.fn(async () => {
       expect((await readStoredMainSession(storePath)).restartRecoveryBeforeAgentReplyState).toBe(
         "continue",
       );
     });
     const { followupRun, run, sourceTurnId } = createMinimalRun({
       beforeAgentReply,
-      opts: { onTurnAdopted },
+      opts: { turnAdoptionLifecycle: { onAdopted: onAdopted } },
       isActive: true,
       isStreaming: true,
       shouldSteer: true,
@@ -544,7 +544,7 @@ describe("runReplyAgent active steering", () => {
     await expect(run()).resolves.toEqual(expect.objectContaining({ text: "final" }));
 
     expect(beforeAgentReply).toHaveBeenCalledOnce();
-    expect(onTurnAdopted).toHaveBeenCalledOnce();
+    expect(onAdopted).toHaveBeenCalledOnce();
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
   });
 });
@@ -1167,11 +1167,11 @@ describe("runReplyAgent pending final delivery capture", () => {
     expect(completedEntry.restartRecoveryTerminalRunIds).toEqual([first.sourceTurnId]);
     state.runEmbeddedAgentMock.mockClear();
     const beforeAgentReply = vi.fn(async () => undefined);
-    const onTurnAdopted = vi.fn();
+    const onAdopted = vi.fn();
     const completedStore = { main: completedEntry };
     const duplicate = createMinimalRun({
       beforeAgentReply,
-      opts: { onTurnAdopted },
+      opts: { turnAdoptionLifecycle: { onAdopted: onAdopted } },
       sessionCtx,
       runOverrides: { messageProvider: "discord" },
       sessionEntry: completedEntry,
@@ -1191,7 +1191,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     await expect(duplicate.run()).resolves.toBeUndefined();
 
     expect(beforeAgentReply).not.toHaveBeenCalled();
-    expect(onTurnAdopted).not.toHaveBeenCalled();
+    expect(onAdopted).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect((await readStoredMainSession(storePath)).restartRecoveryTerminalRunIds).toEqual([
       first.sourceTurnId,
@@ -1224,12 +1224,12 @@ describe("runReplyAgent pending final delivery capture", () => {
     const sessionStore = { main: sessionEntry };
     const storePath = await createSessionStoreFile(sessionEntry);
     const beforeAgentReply = vi.fn(async () => undefined);
-    const onTurnAdopted = vi.fn();
+    const onAdopted = vi.fn();
     const duplicate = createMinimalRun({
       beforeAgentReply,
       isActive: true,
       shouldSteer: true,
-      opts: { onTurnAdopted },
+      opts: { turnAdoptionLifecycle: { onAdopted: onAdopted } },
       sessionCtx,
       runOverrides: { messageProvider: "discord" },
       sessionEntry,
@@ -1250,7 +1250,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     expect(duplicate.sourceTurnId).toBe(sourceTurnId);
     expect(beforeAgentReply).not.toHaveBeenCalled();
-    expect(onTurnAdopted).not.toHaveBeenCalled();
+    expect(onAdopted).not.toHaveBeenCalled();
     expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(await readStoredMainSession(storePath)).toMatchObject({
@@ -1286,12 +1286,12 @@ describe("runReplyAgent pending final delivery capture", () => {
     const sessionStore = { main: sessionEntry };
     const storePath = await createSessionStoreFile(sessionEntry);
     const beforeAgentReply = vi.fn(async () => undefined);
-    const onTurnAdopted = vi.fn();
+    const onAdopted = vi.fn();
     const duplicate = createMinimalRun({
       beforeAgentReply,
       isActive: true,
       shouldSteer: true,
-      opts: { onTurnAdopted },
+      opts: { turnAdoptionLifecycle: { onAdopted: onAdopted } },
       sessionCtx,
       runOverrides: { messageProvider: "discord" },
       sessionEntry,
@@ -1304,7 +1304,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     expect(duplicate.sourceTurnId).toBe(sourceTurnId);
     expect(beforeAgentReply).not.toHaveBeenCalled();
-    expect(onTurnAdopted).not.toHaveBeenCalled();
+    expect(onAdopted).not.toHaveBeenCalled();
     expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     const stored = await readStoredMainSession(storePath);
@@ -1609,10 +1609,10 @@ describe("runReplyAgent pending final delivery capture", () => {
     const sessionStore = { main: sessionEntry };
     const storePath = await createSessionStoreFile(sessionEntry);
     const beforeAgentReply = vi.fn(async () => undefined);
-    const onTurnAdopted = vi.fn();
+    const onAdopted = vi.fn();
     const { run } = createMinimalRun({
       beforeAgentReply,
-      opts: { onTurnAdopted },
+      opts: { turnAdoptionLifecycle: { onAdopted: onAdopted } },
       sessionCtx: {
         Provider: "webchat",
         OriginatingChannel: "webchat",
@@ -1626,7 +1626,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     await expect(run()).rejects.toThrow("restart recovery claim changed before agent adoption");
 
-    expect(onTurnAdopted).not.toHaveBeenCalled();
+    expect(onAdopted).not.toHaveBeenCalled();
     expect(beforeAgentReply).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(await readStoredMainSession(storePath)).toMatchObject({
@@ -1692,7 +1692,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     }
   });
 
-  it("fires onTurnAdopted after restart recovery delivery context persist completes", async () => {
+  it("fires onAdopted after restart recovery delivery context persist completes", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -1706,7 +1706,7 @@ describe("runReplyAgent pending final delivery capture", () => {
       messageId: "1503645939964055592",
     });
     const events: string[] = [];
-    const onTurnAdopted = vi.fn(async () => {
+    const onAdopted = vi.fn(async () => {
       const storedAtAdoption = await readStoredMainSession(storePath);
       expect(storedAtAdoption.restartRecoveryDeliveryContext).toEqual({
         channel: "discord",
@@ -1747,7 +1747,10 @@ describe("runReplyAgent pending final delivery capture", () => {
     });
 
     const { followupRun, run, sourceTurnId } = createMinimalRun({
-      opts: { onTurnAdopted, sourceReplyDeliveryMode: "message_tool_only" },
+      opts: {
+        turnAdoptionLifecycle: { onAdopted: onAdopted },
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
       sessionCtx: {
         Provider: "discord",
         OriginatingChannel: "discord",
@@ -1775,7 +1778,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     await run();
 
-    expect(onTurnAdopted).toHaveBeenCalledOnce();
+    expect(onAdopted).toHaveBeenCalledOnce();
     expect(events).toEqual(["adopted", "agent-run"]);
     expect(
       (await readStoredMainSession(storePath)).restartRecoverySourceReplyDeliveryMode,
@@ -1801,13 +1804,16 @@ describe("runReplyAgent pending final delivery capture", () => {
     };
     const sessionStore = { main: sessionEntry };
     const storePath = await createSessionStoreFile(sessionEntry);
-    const onTurnAdopted = vi.fn(async () => {
+    const onAdopted = vi.fn(async () => {
       expect(
         (await readStoredMainSession(storePath)).restartRecoverySameChannelThreadRequired,
       ).toBe(true);
     });
     const { followupRun, run, sourceTurnId } = createMinimalRun({
-      opts: { onTurnAdopted, sourceReplyDeliveryMode: "message_tool_only" },
+      opts: {
+        turnAdoptionLifecycle: { onAdopted: onAdopted },
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
       sessionCtx: {
         Provider: "slack",
         OriginatingChannel: "slack",
@@ -1832,7 +1838,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     await run();
 
-    expect(onTurnAdopted).toHaveBeenCalledOnce();
+    expect(onAdopted).toHaveBeenCalledOnce();
     expect(
       (await readStoredMainSession(storePath)).restartRecoverySameChannelThreadRequired,
     ).toBeUndefined();
@@ -1872,8 +1878,10 @@ describe("runReplyAgent pending final delivery capture", () => {
     const { followupRun, run, sourceTurnId } = createMinimalRun({
       beforeAgentReply,
       opts: {
-        onTurnAdopted: async () => {
-          events.push("adopted");
+        turnAdoptionLifecycle: {
+          onAdopted: async () => {
+            events.push("adopted");
+          },
         },
       },
       sessionCtx: {
@@ -2004,7 +2012,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     });
   });
 
-  it("fires onTurnAdopted for suppressed-delivery runs before the agent turn", async () => {
+  it("fires onAdopted for suppressed-delivery runs before the agent turn", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -2012,7 +2020,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     const sessionStore = { main: sessionEntry };
     const storePath = await createSessionStoreFile(sessionEntry);
     const events: string[] = [];
-    const onTurnAdopted = vi.fn(async () => {
+    const onAdopted = vi.fn(async () => {
       const storedAtAdoption = await readStoredMainSession(storePath);
       expect(storedAtAdoption.restartRecoveryDeliveryContext).toBeUndefined();
       expect(storedAtAdoption.restartRecoveryDeliveryRunId).toBeUndefined();
@@ -2028,7 +2036,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     const { run } = createMinimalRun({
       opts: {
-        onTurnAdopted,
+        turnAdoptionLifecycle: { onAdopted: onAdopted },
         sourceReplyDeliveryMode: "message_tool_only",
       },
       sessionCtx: {
@@ -2049,7 +2057,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     await run();
 
-    expect(onTurnAdopted).toHaveBeenCalledOnce();
+    expect(onAdopted).toHaveBeenCalledOnce();
     expect(events).toEqual(["adopted", "agent-run"]);
   });
 

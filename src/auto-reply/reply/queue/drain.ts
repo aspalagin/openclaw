@@ -49,16 +49,20 @@ const FOLLOWUP_RUN_CALLBACKS = resolveGlobalMap<string, (run: FollowupRun) => Pr
 
 const QUEUED_ADMISSION_OWNER_STATE_KEY = Symbol.for("openclaw.queuedAdmissionOwnerState");
 const queuedAdmissionOwnerState = resolveGlobalSingleton(QUEUED_ADMISSION_OWNER_STATE_KEY, () => ({
-  keys: new WeakMap<NonNullable<FollowupRun["queuedLifecycle"]>, string>(),
+  keys: new WeakMap<NonNullable<FollowupRun["turnAdoptionLifecycle"]>, string>(),
   nextId: 1,
 }));
 
-function resolveQueuedLifecycleDeliveryKey(lifecycle: FollowupRun["queuedLifecycle"]): string {
+function resolveTurnAdoptionLifecycleDeliveryKey(
+  lifecycle: FollowupRun["turnAdoptionLifecycle"],
+): string {
   if (!lifecycle) {
     return "";
   }
   const explicitOwnerKey = lifecycle.ownerKey ?? "";
-  if (!lifecycle.onAdmitted) {
+  // Exclusive admission isolation (historical onAdmitted). Cancel-only owners
+  // (gateway) omit onAbandoned and share collect identity via ownerKey alone.
+  if (lifecycle.onAbandoned === undefined) {
     return explicitOwnerKey;
   }
   let admissionOwnerKey = queuedAdmissionOwnerState.keys.get(lifecycle);
@@ -73,7 +77,9 @@ function resolveQueuedLifecycleDeliveryKey(lifecycle: FollowupRun["queuedLifecyc
 
 function assertSingleAdmissionOwner(items: readonly FollowupRun[]): void {
   const owners = new Set(
-    items.flatMap((item) => (item.queuedLifecycle?.onAdmitted ? [item.queuedLifecycle] : [])),
+    items.flatMap((item) =>
+      item.turnAdoptionLifecycle?.onAbandoned !== undefined ? [item.turnAdoptionLifecycle] : [],
+    ),
   );
   if (owners.size > 1) {
     throw new Error("followup queue cannot aggregate distinct admission lifecycles");
@@ -180,7 +186,7 @@ export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {
     run.originatingReplyToMode ?? "",
     normalizeChatType(run.originatingChatType) ?? "",
     resolveFollowupAuthorizationKey(execution),
-    run.queuedLifecycle?.ownerKey ?? "",
+    run.turnAdoptionLifecycle?.ownerKey ?? "",
     normalizeOptionalString(execution.runtimePolicySessionKey ?? execution.sessionKey) ?? "",
     execution.messageProvider ?? "",
     JSON.stringify([...new Set(execution.clientCaps ?? [])].toSorted()),
@@ -209,7 +215,7 @@ export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {
     execution.suppressNextUserMessagePersistence === true,
     execution.suppressTranscriptOnlyAssistantPersistence === true,
     execution.blockReplyBreak,
-    resolveQueuedLifecycleDeliveryKey(run.queuedLifecycle),
+    resolveTurnAdoptionLifecycleDeliveryKey(run.turnAdoptionLifecycle),
   ]);
 }
 
@@ -297,7 +303,7 @@ type FollowupRuntimeMetadata = Pick<
   | "abortSignal"
   | "queueAbortSignal"
   | "deliveryCorrelations"
-  | "queuedLifecycle"
+  | "turnAdoptionLifecycle"
   | "onReplyAdmissionWaitChange"
 >;
 
@@ -409,7 +415,7 @@ function resolveAggregateOwner(items: readonly FollowupRun[]): FollowupRun | und
   // later transport-only source has no cancellation identity.
   return (
     items.findLast((item) => item.abortSignal) ??
-    items.findLast((item) => item.queuedLifecycle) ??
+    items.findLast((item) => item.turnAdoptionLifecycle) ??
     items.at(-1)
   );
 }
@@ -542,7 +548,7 @@ function collectRuntimeMetadata(
     abortSignal,
     queueAbortSignal: items.find((item) => item.queueAbortSignal)?.queueAbortSignal,
     deliveryCorrelations: deliveryCorrelations.length > 0 ? deliveryCorrelations : undefined,
-    queuedLifecycle: items.length === 1 ? items[0]?.queuedLifecycle : undefined,
+    turnAdoptionLifecycle: items.length === 1 ? items[0]?.turnAdoptionLifecycle : undefined,
     onReplyAdmissionWaitChange:
       admissionWaitCallbacks.size > 0
         ? (waiting) => {
@@ -655,7 +661,7 @@ function releaseQueueSummaryDeliveryForRetry(
     if (sourceIndex >= 0) {
       queue.summarySources[sourceIndex] = createOverflowSummaryRetrySource(source);
     }
-    if (!source.queuedLifecycle) {
+    if (!source.turnAdoptionLifecycle) {
       completeFollowupRunLifecycle(source);
     }
   }
@@ -698,7 +704,7 @@ async function runQueueSummaryDelivery(
   const cancellation = createAggregateCancellation(protectedSources);
   const needsAdmission =
     protectedSources.length > 1 ||
-    protectedSources.some((source) => source.queuedLifecycle?.onAdmitted);
+    protectedSources.some((source) => source.turnAdoptionLifecycle?.onAbandoned !== undefined);
   const onAdmitted = needsAdmission
     ? async () => {
         if (admitted) {
@@ -884,7 +890,7 @@ export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupR
     originatingReplyToMode: source.originatingReplyToMode,
     originatingChatType: source.originatingChatType,
     abortSignal: source.abortSignal,
-    queuedLifecycle: source.queuedLifecycle,
+    turnAdoptionLifecycle: source.turnAdoptionLifecycle,
     onReplyAdmissionWaitChange: source.onReplyAdmissionWaitChange,
     ...(source.currentInboundEventKind === "room_event"
       ? { currentInboundEventKind: "room_event" }
@@ -948,12 +954,12 @@ async function runSyntheticOverflowSummary(params: {
     onReplyAdmissionWaitChange: collectRuntimeMetadata(params.sources).onReplyAdmissionWaitChange,
     ...(params.onAdmitted
       ? {
-          queuedLifecycle: {
-            onAdmitted: async () => {
+          turnAdoptionLifecycle: {
+            onAdopted: async () => {
               await params.onAdmitted?.();
               admitted = true;
             },
-            onComplete: () => {
+            onSettled: () => {
               if (admitted) {
                 for (const source of params.sources) {
                   completeFollowupRunLifecycle(source);
@@ -1229,7 +1235,9 @@ export function scheduleFollowupDrain(
             };
             const needsGroupAdmission =
               activeGroupItems.length > 1 ||
-              activeGroupItems.some((item) => item.queuedLifecycle?.onAdmitted);
+              activeGroupItems.some(
+                (item) => item.turnAdoptionLifecycle?.onAbandoned !== undefined,
+              );
             const consumeAdmittedGroup = () => {
               cancellation.admit();
               admitted = true;
@@ -1264,9 +1272,9 @@ export function scheduleFollowupDrain(
                 ...collectRuntimeMetadata(activeGroupItems, cancellation.signal),
                 ...(needsGroupAdmission
                   ? {
-                      queuedLifecycle: {
-                        onAdmitted: admitGroupSources,
-                        onComplete: () => {
+                      turnAdoptionLifecycle: {
+                        onAdopted: admitGroupSources,
+                        onSettled: () => {
                           if (admitted) {
                             completeGroup();
                           }

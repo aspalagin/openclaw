@@ -4,6 +4,34 @@ export { deriveDurableFinalDeliveryRequirements } from "./capabilities.js";
 export { defineChannelMessageAdapter } from "./adapter.js";
 export { createChannelMessageAdapterFromOutbound } from "./outbound-bridge.js";
 export { createDurableInboundReceiveJournalFromQueue } from "./durable-receive.js";
+export {
+  createIngressDrainOwnerId,
+  INGRESS_CLAIM_LEASE_MS,
+  INGRESS_CLAIM_PROCESS_ID,
+  isIngressClaimOwnedByOtherLiveProcess,
+  isIngressCorruptClaimOwnedByOtherLiveProcess,
+  isLiveLocalIngressDrainOwner,
+  processInstanceIdFromOwnerId,
+  processPidFromOwnerId,
+} from "./ingress-claim-owner.js";
+export {
+  bindIngressLifecycleToReplyOptions,
+  createChannelIngressDrain,
+  DEFAULT_INGRESS_ADOPTION_STALL_MS,
+  IngressAdoptionLostError,
+  INGRESS_TOMBSTONE_RETRY_MAX_ATTEMPTS,
+  isIngressAdoptionLostError,
+} from "./ingress-drain.js";
+export {
+  DEFAULT_INGRESS_RETRY_BASE_MS,
+  DEFAULT_INGRESS_RETRY_DEAD_LETTER_MIN_AGE_MS,
+  DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS,
+  DEFAULT_INGRESS_RETRY_MAX_MS,
+  resolveIngressAttemptNumber,
+  resolveIngressFailureDisposition,
+  resolveIngressRetryDelayMs,
+  shouldDeadLetterRetryableIngressEvent,
+} from "./ingress-retry-policy.js";
 
 export {
   verifyChannelMessageAdapterCapabilityProofs,
@@ -31,6 +59,11 @@ export {
   resolveChannelSourceReplyDeliveryMode,
 } from "./reply-pipeline.js";
 export type {
+  ChannelIngressDispatchLifecycle,
+  ChannelIngressDrain,
+  ChannelIngressDrainDispatchResult,
+} from "./ingress-drain.js";
+export type {
   ChannelIngressQueue,
   ChannelIngressQueueClaim,
   ChannelIngressQueueClaimRef,
@@ -38,6 +71,7 @@ export type {
   ChannelIngressQueueRecord,
 } from "./ingress-queue.js";
 export type { MessageAckPolicy, MessageReceiveContext } from "./receive.js";
+export type { IngressNonRetryableFailure } from "./ingress-retry-policy.js";
 export type {
   ChannelMessageAdapterShape,
   ChannelMessageDurableFinalAdapter,

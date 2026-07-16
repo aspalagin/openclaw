@@ -157,8 +157,9 @@ const defaultPublicDeprecatedExportsByEntrypointBudget = Object.freeze({
   "channel-lifecycle": 23,
   // Registry sweep: 77 packages, zero fetch failures; channel-ingress and dead aliases
   // had zero consumers.
-  "channel-message": 230,
-  "channel-message-runtime": 227,
+  // +11 each: durable channel-ingress drain seam (drain/lifecycle/claim/retry) mirrored by compat (#108656).
+  "channel-message": 241,
+  "channel-message-runtime": 238,
   "channel-pairing-paths": 1,
   // Deprecated pairing/conversation exports from the SQLite pairing migration
   // landed on main (#105802) without entrypoint pins; not touched by this PR.
@@ -232,7 +233,9 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +6: app-guided provider setup types retained by plugin-entry and mirrors.
       // Used-union narrowing: 31 wildcard barrels drop to explicit used exports;
       // proxy stream API and codex marker/scaffold pins retained.
-      7945,
+      // +60: durable channel-ingress drain seam — drain/lifecycle/claim/retry exports
+      // and their compat mirrors replacing the Telegram-private spool machinery (#108656).
+      8005,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -247,7 +250,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +4: dual-field plan payload builder for the steps deprecation window.
       // +6: active plan-step helpers pinned through channel-outbound and mirrors.
       // Used-union narrowing of the 31 wildcard barrels.
-      4434,
+      // +30: durable channel-ingress drain seam functions and compat mirrors (#108656).
+      4464,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -260,7 +264,9 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +3: dual-field plan payload builder through deprecated channel barrels.
       // +8: channel-outbound plan pins mirrored through deprecated barrels.
       // Used-union narrowing drops inherited deprecated exports.
-      2977,
+      // +40: durable channel-ingress drain seam compat mirrors in the channel-message
+      // deprecation-window barrels (#108656).
+      3017,
       env,
     ),
     publicWildcardReexports: readPluginSdkSurfaceBudgetEnv(

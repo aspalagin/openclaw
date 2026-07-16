@@ -27,6 +27,7 @@ import { resolveFastModeState } from "../../agents/fast-mode.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import { deriveContextPromptTokens, hasNonzeroUsage } from "../../agents/usage.js";
+import { isIngressAdoptionLostError } from "../../channels/message/ingress-drain.js";
 import { enqueueCommitmentExtraction } from "../../commitments/runtime.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
@@ -1226,6 +1227,8 @@ export async function runReplyAgent(params: {
     replyOperation: providedReplyOperation,
     beforeAgentReply,
   } = params;
+  // One lifecycle for all adoption sites in this run.
+  const turnAdoptionLifecycle = opts?.turnAdoptionLifecycle;
   let activeSessionEntry = sessionEntry;
   const activeSessionStore = sessionStore;
   let activeIsNewSession = isNewSession;
@@ -1360,7 +1363,7 @@ export async function runReplyAgent(params: {
       followupRun.prompt,
       {
         steeringMode: "all",
-        ...(opts?.onTurnAdopted ? { waitForTranscriptCommit: true } : {}),
+        ...(turnAdoptionLifecycle ? { waitForTranscriptCommit: true } : {}),
         ...(resolvedQueue.debounceMs !== undefined ? { debounceMs: resolvedQueue.debounceMs } : {}),
         ...(followupRun.run.sourceReplyDeliveryMode
           ? { sourceReplyDeliveryMode: followupRun.run.sourceReplyDeliveryMode }
@@ -1374,10 +1377,23 @@ export async function runReplyAgent(params: {
     if (steerOutcome.queued) {
       activeReplyOperation?.recordActivity();
       try {
-        await opts?.onTurnAdopted?.();
+        await turnAdoptionLifecycle?.onAdopted();
       } catch (error) {
-        // Transcript-backed steering is already irrevocably queued here.
-        // Replaying ingress would duplicate the injected user turn.
+        if (isIngressAdoptionLostError(error)) {
+          // Claim was tombstoned/superseded/guillotined after transcript commit.
+          // Cancel the active run so steered tools do not keep executing; do not
+          // rethrow — replaying ingress would duplicate the injected user turn.
+          const abortKey = sessionKey ?? queueKey;
+          if (abortKey) {
+            replyRunRegistry.abort(abortKey);
+          }
+          logVerbose(
+            `queue: active session ${steerSessionId} adoption lost after transcript commit (${error.code}); aborting steered turn without ingress replay`,
+          );
+          typing.cleanup();
+          return undefined;
+        }
+        // Ordinary callback failures: transcript-backed steering is irrevocable.
         logVerbose(
           `queue: active session ${steerSessionId} adoption finalizer failed after transcript commit: ${String(
             error,
@@ -1815,7 +1831,7 @@ export async function runReplyAgent(params: {
     // Adoption marks run start and must never be spool-replayed (would re-run tools).
     // Suppressed delivery persists only the user transcript; crashed suppressed runs die
     // silently. Deliverable turns atomically persist transcript plus recovery ownership.
-    await opts?.onTurnAdopted?.();
+    await turnAdoptionLifecycle?.onAdopted();
     const shouldCheckpointBeforeAgentReply =
       beforeAgentReply !== undefined && !beforeAgentReplyInvoked;
     const hookReply = await invokeBeforeAgentReply({ sessionId: replyOperation.sessionId });

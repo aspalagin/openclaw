@@ -361,11 +361,13 @@ export async function deliverQueuedSessionDelivery(params: {
     },
     // Preflight remains retryable. Ownership starts only after the agent runner
     // has durably adopted the turn and before it can execute tools or reply.
-    onTurnAdopted: () =>
-      markSessionDeliveryAttemptStarted(
-        params.entry,
-        ...sessionDeliveryStateDirArgs(params.stateDir),
-      ),
+    turnAdoptionLifecycle: {
+      onAdopted: () =>
+        markSessionDeliveryAttemptStarted(
+          params.entry,
+          ...sessionDeliveryStateDirArgs(params.stateDir),
+        ),
+    },
     delivery: {
       preparePayload: (payload) => {
         if (isRestartContinuationBusyPayload(payload)) {

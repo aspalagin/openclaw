@@ -15,11 +15,27 @@ const loadChannelMessageRuntimeModule = createLazyRuntimeModule(
 
 export type { DurableMessageBatchSendResult } from "../channels/message/runtime.js";
 export {
+  bindIngressLifecycleToReplyOptions,
+  createChannelIngressDrain,
   createReplyPrefixContext,
   createReplyPrefixOptions,
   createTypingCallbacks,
   createChannelReplyPipeline as createChannelMessageReplyPipeline,
+  DEFAULT_INGRESS_ADOPTION_STALL_MS,
+  DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS,
+  DEFAULT_INGRESS_RETRY_DEAD_LETTER_MIN_AGE_MS,
+  INGRESS_CLAIM_LEASE_MS,
+  INGRESS_CLAIM_PROCESS_ID,
+  IngressAdoptionLostError,
+  isIngressAdoptionLostError,
+  isIngressClaimOwnedByOtherLiveProcess,
+  isIngressCorruptClaimOwnedByOtherLiveProcess,
+  processPidFromOwnerId,
+  resolveIngressAttemptNumber,
+  resolveIngressFailureDisposition,
+  resolveIngressRetryDelayMs,
   resolveChannelSourceReplyDeliveryMode as resolveChannelMessageSourceReplyDeliveryMode,
+  shouldDeadLetterRetryableIngressEvent,
 } from "../channels/message/index.js";
 // Bare interval/stop orchestration for channels that own their typing renewal
 // policy (e.g. per-message reply budgets) instead of the createTypingCallbacks lifecycle.
@@ -130,11 +146,15 @@ export type {
   ChannelMessageSendTextContext,
   ChannelMessageUnknownSendContext,
   ChannelMessageUnknownSendReconciliationResult,
+  ChannelIngressDispatchLifecycle,
+  ChannelIngressDrain,
+  ChannelIngressDrainDispatchResult,
   ChannelIngressQueue,
   ChannelIngressQueueClaim,
   ChannelIngressQueueClaimRef,
   ChannelIngressQueueCorruptClaim,
   ChannelIngressQueueRecord,
+  IngressNonRetryableFailure,
   MessageAckPolicy,
   MessageReceiveContext,
   MessageReceipt,
