@@ -226,23 +226,67 @@ describe("operator approval store", () => {
       ).toMatchObject({ outcome: "resolved" });
     }
 
-    const firstPage = listTerminalOperatorApprovals({ limit: 2, databaseOptions });
+    const firstPage = listTerminalOperatorApprovals({ limit: 2, nowMs: 3_000, databaseOptions });
     expect(firstPage.records.map((record) => record.id)).toEqual(["system-middle", "plugin-new"]);
     expect(firstPage.nextCursor).toEqual(expect.any(String));
 
     const secondPage = listTerminalOperatorApprovals({
       cursor: firstPage.nextCursor,
       limit: 2,
+      nowMs: 3_000,
       databaseOptions,
     });
     expect(secondPage.records.map((record) => record.id)).toEqual(["exec-old"]);
     expect(secondPage.nextCursor).toBeUndefined();
 
     expect(
-      listTerminalOperatorApprovals({ kind: "plugin", databaseOptions }).records.map(
+      listTerminalOperatorApprovals({ kind: "plugin", nowMs: 3_000, databaseOptions }).records.map(
         (record) => record.id,
       ),
     ).toEqual(["plugin-new"]);
+  });
+
+  it("excludes terminal rows resolved before the 30-day retention cutoff", () => {
+    const databaseOptions = createDatabaseOptions();
+    const day = 24 * 60 * 60_000;
+    const now = 100 * day;
+    expect(
+      insertOperatorApproval({
+        approval: approval("old", { createdAtMs: 1_000, expiresAtMs: now }),
+        databaseOptions,
+      }),
+    ).toMatchObject({ outcome: "inserted" });
+    expect(
+      insertOperatorApproval({
+        approval: approval("recent", { createdAtMs: now - 2 * day, expiresAtMs: now }),
+        databaseOptions,
+      }),
+    ).toMatchObject({ outcome: "inserted" });
+    // Resolve one row 40 days ago (past the window) and one 1 day ago (inside).
+    expect(
+      resolveOperatorApproval({
+        id: "old",
+        decision: "deny",
+        resolver: { kind: "device", id: "reviewer-device" },
+        nowMs: now - 40 * day,
+        databaseOptions,
+      }),
+    ).toMatchObject({ outcome: "resolved" });
+    expect(
+      resolveOperatorApproval({
+        id: "recent",
+        decision: "deny",
+        resolver: { kind: "device", id: "reviewer-device" },
+        nowMs: now - day,
+        databaseOptions,
+      }),
+    ).toMatchObject({ outcome: "resolved" });
+
+    expect(
+      listTerminalOperatorApprovals({ nowMs: now, databaseOptions }).records.map(
+        (record) => record.id,
+      ),
+    ).toEqual(["recent"]);
   });
 
   it("filters an audience before applying the replay limit across scan pages", () => {

@@ -851,6 +851,7 @@ export function listTerminalOperatorApprovals(
     cursor?: string;
     limit?: number;
     kind?: OperatorApprovalKind;
+    nowMs?: number;
     databaseOptions?: OpenClawStateDatabaseOptions;
   } = {},
 ): ListTerminalOperatorApprovalsResult {
@@ -858,6 +859,9 @@ export function listTerminalOperatorApprovals(
     ? (params.limit ?? OPERATOR_APPROVAL_HISTORY_DEFAULT_LIMIT)
     : OPERATOR_APPROVAL_HISTORY_DEFAULT_LIMIT;
   const resultLimit = Math.max(1, Math.min(requestedLimit, OPERATOR_APPROVAL_HISTORY_MAX_LIMIT));
+  // Enforce the same 30-day retention the UI promises, independent of whether a
+  // prune has run recently, so history can never surface rows past the window.
+  const retentionCutoffMs = (params.nowMs ?? Date.now()) - OPERATOR_APPROVAL_TERMINAL_RETENTION_MS;
   let cursor =
     params.cursor === undefined ? undefined : decodeOperatorApprovalHistoryCursor(params.cursor);
   const database = openOpenClawStateDatabase(params.databaseOptions);
@@ -875,6 +879,7 @@ export function listTerminalOperatorApprovals(
       .selectAll()
       .where("status", "!=", "pending")
       .where("resolved_at_ms", "is not", null)
+      .where("resolved_at_ms", ">=", retentionCutoffMs)
       .orderBy("resolved_at_ms", "desc")
       .orderBy("approval_id", "desc")
       .limit(batchLimit);
