@@ -12,7 +12,6 @@ import type { TelegramBotDeps } from "./bot-deps.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
 import type { TelegramDeliveryController } from "./bot-message-dispatch-delivery.js";
 import type { TelegramDraftController } from "./bot-message-dispatch-draft.js";
-import type { TelegramReplyFenceController } from "./bot-message-dispatch-fence.js";
 import type { TelegramProgressController } from "./bot-message-dispatch-progress.js";
 import type { TelegramReplyDelivery } from "./bot-message-dispatch-reply.js";
 import type { TelegramDispatchTurnState } from "./bot-message-dispatch.types.js";
@@ -26,7 +25,14 @@ export async function runTelegramDispatchTurn(params: {
   context: TelegramMessageContext;
   delivery: TelegramDeliveryController;
   draft: TelegramDraftController;
-  fence: TelegramReplyFenceController;
+  /** Pre-adoption abort + lifecycle from durable ingress (optional for non-spooled). */
+  turnAdoptionLifecycle?: {
+    onAdopted: () => void | Promise<void>;
+    onDeferred?: () => void;
+    onAbandoned?: () => void;
+    abortSignal?: AbortSignal;
+  };
+  isSuperseded: () => boolean;
   progress: TelegramProgressController;
   reply: TelegramReplyDelivery;
   state: TelegramDispatchTurnState;
@@ -110,13 +116,19 @@ export async function runTelegramDispatchTurn(params: {
               replyOptions: {
                 skillFilter: context.skillFilter,
                 disableBlockStreaming: params.draft.disableBlockStreaming,
-                abortSignal: params.fence.abortSignal,
-                onTurnAdopted: params.fence.adoptTurn,
+                abortSignal: params.turnAdoptionLifecycle?.abortSignal,
+                turnAdoptionLifecycle: params.turnAdoptionLifecycle
+                  ? {
+                      onAdopted: params.turnAdoptionLifecycle.onAdopted,
+                      onDeferred: params.turnAdoptionLifecycle.onDeferred,
+                      onAbandoned: params.turnAdoptionLifecycle.onAbandoned,
+                      abortSignal: params.turnAdoptionLifecycle.abortSignal,
+                    }
+                  : undefined,
                 sourceReplyDeliveryMode: isRoomEvent ? "message_tool_only" : undefined,
                 queuedDeliveryCorrelations: isRoomEvent
                   ? [{ begin: beginDeliveryCorrelation }]
                   : undefined,
-                queuedFollowupLifecycle: params.fence.queuedFollowupLifecycle,
                 suppressTyping: isRoomEvent,
                 onPartialReply:
                   params.draft.answerLane.stream || params.draft.reasoningLane.stream
