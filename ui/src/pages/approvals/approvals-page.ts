@@ -132,14 +132,18 @@ class ApprovalsPage extends OpenClawLightDomElement {
   private readonly subscriptions = new SubscriptionsController(this).effect(
     () => this.context?.gateway,
     (gateway) => {
-      // A new gateway identity (even with the same client/connection) makes any
-      // in-flight request non-current; reset the loading state and force a fresh
-      // load so the page cannot stay stuck loading against the old source.
+      // A new gateway identity (even with the same client/connection) is a fresh
+      // data source: invalidate in-flight requests and drop the previous
+      // gateway's rows/cursor/error so stale history is not shown and "Load more"
+      // cannot append across sources. Mirrors the client-change reset below.
       if (this.gatewaySource !== gateway) {
         this.requestGeneration += 1;
         this.loading = false;
         this.loadingMore = false;
         this.hasLoaded = false;
+        this.items = [];
+        this.nextCursor = null;
+        this.error = null;
       }
       this.gatewaySource = gateway;
       this.applyGatewaySnapshot(gateway.snapshot);
