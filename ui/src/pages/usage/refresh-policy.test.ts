@@ -45,4 +45,15 @@ describe("decideUsageRefresh", () => {
       }),
     ).toBe("fetch");
   });
+
+  it("applies the same TTL to automatic settle polling", () => {
+    expect(
+      decideUsageRefresh({
+        reason: "poll",
+        visible: true,
+        nowMs: NOW_MS,
+        lastLoadedAtMs: NOW_MS - USAGE_PAYLOAD_TTL_MS + 1,
+      }),
+    ).toBe("skip");
+  });
 });

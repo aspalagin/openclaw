@@ -41,7 +41,6 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
-- **Control UI usage refreshes:** reuse recent Usage payloads across Gateway reconnects, defer stale automatic refreshes until the tab regains focus, and preserve explicit manual refreshes. Fixes #107917. Thanks @geekforlife.
 - **Cron lifecycle conflict retries:** preserve execution-phase retry decisions across scheduled, manual, and startup-recovered runs so post-execution claim conflicts cannot replay completed messages or tools. Fixes #108428. Thanks @yetval.
 - **Discord gateway metadata deadline:** carry the existing lookup deadline through DNS and proxy preflight, request headers, and response bodies so stalled gateway startup aborts cleanly. (#104580) Thanks @hugenshen.
 - **Control UI cloud session thinking:** expose reasoning level in the New Session model picker and persist the selected level before cloud dispatch.
