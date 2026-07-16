@@ -58,6 +58,18 @@ extension OnboardingView {
             guard installed else { return }
             self.updateMonitoring(for: self.activePageIndex)
         }
+        .onChange(of: aiSetup.connected) { _, connected in
+            guard connected else { return }
+            self.maybeStartMemoryImportPlanning()
+        }
+        .onChange(of: memoryImport.autoAdvanceRequested) { _, requested in
+            guard requested else { return }
+            self.advancePastEmptyMemoryImportIfNeeded()
+        }
+        .onChange(of: memoryImport.pageEligible) { wasEligible, isEligible in
+            guard wasEligible, !isEligible else { return }
+            self.reconcileCursorAfterMemoryImportRemoval()
+        }
         .onDisappear {
             self.onboardingDidDisappear()
         }
@@ -90,6 +102,7 @@ extension OnboardingView {
         // Queued detection can otherwise proceed into a mutating activation
         // after the window or its selected route has gone away.
         aiSetup.resetForGatewayChange(clearPendingHandoff: false)
+        memoryImport.reset()
         systemAgentState.resetForGatewayChange()
         stopPermissionMonitoring()
         stopDiscovery()
@@ -99,6 +112,24 @@ extension OnboardingView {
         guard !pageOrder.isEmpty else { return 0 }
         let clamped = min(max(0, pageCursor), pageOrder.count - 1)
         return pageOrder[clamped]
+    }
+
+    func reconcileCursorAfterMemoryImportRemoval() {
+        guard self.state.connectionMode == .local else { return }
+        let previousOrder = Self.pageOrder(
+            for: .local,
+            requiresCLIInstall: !self.cliInstalled,
+            memoryImportEligible: true)
+        let newOrder = Self.pageOrder(
+            for: .local,
+            requiresCLIInstall: !self.cliInstalled,
+            memoryImportEligible: false)
+        let target = Self.reconciledPageCursor(
+            currentPage: self.currentPage,
+            previousOrder: previousOrder,
+            newOrder: newOrder)
+        guard target != self.currentPage else { return }
+        withAnimation { self.currentPage = target }
     }
 
     func reconcilePageForModeChange(previousActivePageIndex: Int) {
@@ -136,6 +167,7 @@ extension OnboardingView {
         // The UI attempt belongs to one route, but its durable activation lease
         // must survive A -> B -> A while the old Gateway can still be mutating.
         aiSetup.resetForGatewayChange(clearPendingHandoff: false)
+        memoryImport.reset()
         // OpenClaw sessions belong to one Gateway. Dismiss and replace the chat so
         // changing routes cannot send an old session ID to the new endpoint.
         systemAgentState.resetForGatewayChange()
@@ -362,7 +394,7 @@ extension OnboardingView {
                     .buttonStyle(.plain)
                     .foregroundColor(.secondary)
                     .opacity(0.8)
-                    .disabled(self.installingCLI || self.aiSetup.isBusy)
+                    .disabled(self.installingCLI || self.aiSetup.isBusy || self.memoryImport.isApplying)
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
             }
@@ -372,7 +404,8 @@ extension OnboardingView {
 
             HStack(spacing: 8) {
                 ForEach(0..<self.pageCount, id: \.self) { index in
-                    let isInstallLocked = (self.installingCLI || self.aiSetup.isBusy) &&
+                    let isInstallLocked = (self.installingCLI || self.aiSetup.isBusy ||
+                        self.memoryImport.isApplying) &&
                         index != self.currentPage
                     let isConnectionLocked = self.isConnectionSelectionBlocking &&
                         index > (connectionLockIndex ?? 0)
