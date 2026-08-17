@@ -3,6 +3,7 @@ import {
   readPositiveIntegerParam,
   resolveReactionMessageId,
 } from "openclaw/plugin-sdk/channel-actions";
+import { createScopedDmSecurityResolver } from "openclaw/plugin-sdk/channel-config-helpers";
 import type {
   ChannelMessageActionAdapter,
   ChannelMessageToolDiscovery,
@@ -116,6 +117,18 @@ const collectMSTeamsSecurityFindings = createConditionalWarningCollector.finding
   checkId: "channels.msteams.groups.open",
   severity: "warn",
   title: "MS Teams security warning",
+});
+
+const resolveMSTeamsDmPolicy = createScopedDmSecurityResolver<ResolvedMSTeamsAccount>({
+  channelKey: "msteams",
+  resolvePolicy: () => undefined,
+  resolveAllowFrom: () => undefined,
+  resolveAccess: ({ cfg }) => ({
+    dmPolicy: cfg.channels?.msteams?.dmPolicy,
+    allowFrom: cfg.channels?.msteams?.allowFrom,
+  }),
+  policyPathSuffix: "dmPolicy",
+  normalizeEntry: (raw) => normalizeMSTeamsUserInput(raw).toLowerCase(),
 });
 
 const loadMSTeamsChannelRuntime = createLazyRuntimeNamedExport(
@@ -1079,6 +1092,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
       },
     },
     security: {
+      resolveDmPolicy: resolveMSTeamsDmPolicy,
       collectWarnings: ({ cfg }) => collectMSTeamsSecurityFindings({ cfg }),
     },
     pairing: {
