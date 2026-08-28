@@ -153,7 +153,7 @@ export async function ensureLoaded(
 ) {
   // Keep scheduler-local pacing/catch-up mutations unless another in-process
   // owner actually committed a newer snapshot for this SQLite partition.
-  if (state.store && !opts?.forceReload) {
+  if (state.store && !opts?.forceReload && state.deps.cronEnabled) {
     const loadedRevision = loadedCronStoreRevisions.get(state);
     if (
       loadedRevision === undefined ||

@@ -8,6 +8,8 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { setupCronServiceSuite } from "../service.test-harness.js";
 import * as cronStoreModule from "../store.js";
+import { cronStoreKey } from "../store/key.js";
+import { updateCronRuntimeRows } from "../store/row-codec.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import {
   claimCronRunReceiptInDatabase,
@@ -42,10 +44,10 @@ async function expectPathMissing(targetPath: string): Promise<void> {
   await expect(fs.stat(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
 }
 
-function createStoreTestState(storePath: string, onEvent = vi.fn()) {
+function createStoreTestState(storePath: string, onEvent = vi.fn(), cronEnabled = true) {
   return createCronServiceState({
     storePath,
-    cronEnabled: true,
+    cronEnabled,
     log: logger,
     nowMs: () => STORE_TEST_NOW,
     enqueueSystemEvent: vi.fn(),
@@ -135,6 +137,63 @@ describe("cron service store seam coverage", () => {
     await expectPathMissing(storePath);
 
     await persist(state);
+  });
+
+  it("reloads shared state for a scheduler-disabled service", async () => {
+    const { storePath } = await makeStorePath();
+    const initial = createReloadCronJob({
+      updatedAtMs: 1_000,
+      state: { nextRunAtMs: 2_000 },
+    });
+    await saveCronStore(storePath, { version: 1, jobs: [initial] });
+    const state = createStoreTestState(storePath, vi.fn(), false);
+    await ensureLoaded(state, { skipRecompute: true });
+
+    const advancedRuntime = {
+      ...initial,
+      updatedAtMs: 8_000,
+      state: { nextRunAtMs: 9_000, lastRunAtMs: 8_000, lastRunStatus: "ok" as const },
+    };
+    // A separate gateway writes the same SQLite partition, so this process
+    // does not receive the in-memory revision notification.
+    runOpenClawStateWriteTransaction(({ db }) => {
+      updateCronRuntimeRows(db, cronStoreKey(storePath), {
+        version: 1,
+        jobs: [advancedRuntime],
+      });
+    });
+
+    await ensureLoaded(state, { skipRecompute: true });
+
+    expect(findJobOrThrow(state, initial.id)).toMatchObject(advancedRuntime);
+  });
+
+  it("keeps the scheduler-enabled service cache without a local commit notification", async () => {
+    const { storePath } = await makeStorePath();
+    const initial = createReloadCronJob({
+      updatedAtMs: 1_000,
+      state: { nextRunAtMs: 2_000 },
+    });
+    await saveCronStore(storePath, { version: 1, jobs: [initial] });
+    const state = createStoreTestState(storePath);
+    await ensureLoaded(state, { skipRecompute: true });
+
+    runOpenClawStateWriteTransaction(({ db }) => {
+      updateCronRuntimeRows(db, cronStoreKey(storePath), {
+        version: 1,
+        jobs: [
+          {
+            ...initial,
+            updatedAtMs: 8_000,
+            state: { nextRunAtMs: 9_000, lastRunAtMs: 8_000, lastRunStatus: "ok" },
+          },
+        ],
+      });
+    });
+
+    await ensureLoaded(state, { skipRecompute: true });
+
+    expect(findJobOrThrow(state, initial.id)).toMatchObject(initial);
   });
 
   it("quarantines malformed SQLite rows atomically without creating JSON state", async () => {
