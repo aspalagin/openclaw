@@ -165,6 +165,7 @@ function resolveTelegramFastCommandState(params: {
   cfg: OpenClawConfig;
   agentId: string;
   sessionKey: string;
+  parentSessionKey?: string | null;
 }) {
   const defaultModel = resolveDefaultModelForAgent({ cfg: params.cfg, agentId: params.agentId });
   const fallback = () =>
