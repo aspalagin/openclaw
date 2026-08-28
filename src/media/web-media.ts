@@ -182,6 +182,7 @@ const HOST_READ_ALLOWED_DOCUMENT_MIMES = new Set([
   "application/x-7z-compressed",
   "application/x-tar",
   "application/zip",
+  "application/epub+zip",
   "text/csv",
   "text/markdown",
   "text/plain",
@@ -499,6 +500,19 @@ function isAllowedHostReadTextAlias(mime: string | undefined, filePath?: string)
   return ext !== undefined && allowedExtensions.includes(ext);
 }
 
+function isAllowedHostReadFictionBook(params: {
+  sniffedContentType?: string;
+  filePath?: string;
+  buffer?: Buffer;
+}): boolean {
+  const sniffedMime = normalizeMimeType(params.sniffedContentType);
+  return (
+    (sniffedMime === "application/xml" || sniffedMime === "text/xml" || !sniffedMime) &&
+    [".fb2", ".xml"].includes(getFileExtension(params.filePath) ?? "") &&
+    isValidatedHostReadText(params.buffer)
+  );
+}
+
 function formatCapLimit(label: string, cap: number, size: number): string {
   return `${label} exceeds ${formatMediaSize(cap)} limit (got ${formatMediaSize(size)})`;
 }
@@ -586,6 +600,15 @@ function assertHostReadMediaAllowed(params: {
     return;
   }
   if (
+    isAllowedHostReadFictionBook({
+      sniffedContentType: params.sniffedContentType,
+      filePath: params.filePath,
+      buffer: params.buffer,
+    })
+  ) {
+    return;
+  }
+  if (
     params.kind === "document" &&
     normalizedMime &&
     HOST_READ_ALLOWED_DOCUMENT_MIMES.has(normalizedMime)
@@ -595,7 +618,7 @@ function assertHostReadMediaAllowed(params: {
     );
   }
   throw new HostReadMediaTypeError(
-    `Host-local media sends only allow buffer-verified images, audio, video, PDF, Office documents, archives, and validated plain-text documents (got ${sniffedMime ?? normalizedMime ?? "unknown"}).`,
+    `Host-local media sends only allow buffer-verified images, audio, video, PDF, Office documents, EPUBs, archives, and validated plain-text documents (got ${sniffedMime ?? normalizedMime ?? "unknown"}).`,
   );
 }
 

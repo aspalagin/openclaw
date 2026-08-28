@@ -1271,6 +1271,48 @@ describe("loadWebMedia", () => {
     expect(result.contentType).toBe(contentType);
   });
 
+  it("allows buffer-verified host-read EPUB files", async () => {
+    const epub = new JSZip();
+    epub.file("mimetype", "application/epub+zip", { compression: "STORE" });
+    epub.file("META-INF/container.xml", "<container/>");
+
+    const result = await loadDocumentWithHostRead(
+      "book.epub",
+      await epub.generateAsync({ type: "nodebuffer" }),
+    );
+
+    expect(result.kind).toBe("document");
+    expect(result.contentType).toBe("application/epub+zip");
+  });
+
+  it.each(["book.fb2", "book.xml"])(
+    "allows validated host-read FictionBook text for %s",
+    async (fileName) => {
+      const result = await loadDocumentWithHostRead(
+        fileName,
+        '<?xml version="1.0" encoding="utf-8"?><FictionBook><description/></FictionBook>',
+      );
+
+      expect(result.kind).toBe("document");
+      expect(result.contentType).toBe("text/xml");
+    },
+  );
+
+  it("rejects binary data disguised as a FictionBook file", async () => {
+    const filePath = path.join(fixtureRoot, "not-a-book.fb2");
+    await fs.writeFile(filePath, Buffer.from([0, 0xff, 0x10, 0x80]));
+
+    await expectLoadWebMediaErrorCode(
+      loadWebMedia(filePath, {
+        maxBytes: 1024 * 1024,
+        localRoots: "any",
+        readFile: async (inputPath) => await fs.readFile(inputPath),
+        hostReadCapability: true,
+      }),
+      "path-not-allowed",
+    );
+  });
+
   it("rejects binary data disguised as a CSV file", async () => {
     const fakeCsv = path.join(fixtureRoot, "evil.csv");
     // Declared plain-text aliases must use the text validator path even when the
