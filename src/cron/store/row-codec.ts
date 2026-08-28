@@ -286,16 +286,11 @@ export function replaceCronRows(
   storeKey: string,
   store: CronStoreFile,
 ): CronStoredJob[] {
-  const existingRows = executeSqliteQuerySync(
-    db,
-    getCronStoreKysely(db)
-      .selectFrom("cron_jobs")
-      .select("job_id")
-      .where("store_key", "=", storeKey),
-  ).rows;
+  const existingRows = loadCronRows(db, storeKey);
+  const existingRowsById = new Map(existingRows.map((row) => [row.job_id, row]));
   const normalizedJobs: CronStoredJob[] = [];
   for (const [index, job] of store.jobs.entries()) {
-    normalizedJobs.push(upsertCronJobRow(db, storeKey, job, index));
+    normalizedJobs.push(upsertCronJobRow(db, storeKey, job, index, existingRowsById));
   }
   const nextJobIds = new Set(normalizedJobs.map((job) => job.id));
   for (const row of existingRows) {
@@ -321,10 +316,27 @@ export function upsertCronJobRow(
   storeKey: string,
   job: CronStoredJob,
   sortOrder: number,
+  existingRowsById?: ReadonlyMap<string, CronJobRow>,
 ): CronStoredJob {
-  const normalized = normalizeCronJobForSqlite(job);
+  let normalized = normalizeCronJobForSqlite(job);
   if (!normalized) {
     throw new Error(`Cannot persist invalid cron job ${job.id}`);
+  }
+  const existingRow = existingRowsById?.get(normalized.id);
+  if (
+    existingRow?.job_json === JSON.stringify(stripJobRuntimeFields(normalized)) &&
+    normalizeNumber(existingRow.runtime_updated_at_ms) !== undefined
+  ) {
+    const persisted = rowToCronJob(existingRow, tryParseJsonObject(existingRow.job_json) ?? {});
+    if (persisted && persisted.updatedAtMs > normalized.updatedAtMs) {
+      // Preserve runtime written by another gateway while this full config
+      // rewrite updates an unrelated, configuration-identical row.
+      normalized = {
+        ...normalized,
+        state: structuredClone(persisted.state),
+        updatedAtMs: persisted.updatedAtMs,
+      };
+    }
   }
   const values = bindCronJobRow(storeKey, normalized, sortOrder);
   executeSqliteQuerySync(

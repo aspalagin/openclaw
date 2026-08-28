@@ -10,7 +10,10 @@ import {
   archiveLegacyCronStoreForMigration,
   loadLegacyCronStoreForMigration,
 } from "../commands/doctor/cron/legacy-store-migration.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import {
   loadCronJobsStoreWithConfigJobs,
@@ -23,6 +26,8 @@ import {
   saveCronQuarantinedJobs,
   saveCronStore,
 } from "./store.js";
+import { cronStoreKey } from "./store/key.js";
+import { updateCronRuntimeRows } from "./store/row-codec.js";
 import { saveCronJobsStoreWithTransactionHooks } from "./store/transaction-hooks.js";
 import type { CronStoreFile } from "./types.js";
 
@@ -206,6 +211,50 @@ describe("cron store", () => {
       expect((await loadCronStore(storePath)).jobs[0]).toStrictEqual(job);
     },
   );
+
+  it("preserves newer runtime state during an unrelated full config rewrite", async () => {
+    const { storePath } = await makeStorePath();
+    const initial = makeStore("runtime-owner", true);
+    const sibling = makeStore("config-editor", true).jobs[0];
+    if (!sibling) {
+      throw new Error("expected sibling cron job");
+    }
+    initial.jobs.push(sibling);
+    const runtimeOwner = expectDefined(initial.jobs[0], "expected runtime owner cron job");
+    runtimeOwner.state = { nextRunAtMs: 2_000 };
+    runtimeOwner.updatedAtMs = 1_000;
+    sibling.updatedAtMs = 1_000;
+    await saveCronStore(storePath, initial);
+    const staleSnapshot = structuredClone(await loadCronStore(storePath));
+
+    const advancedRuntime = {
+      ...runtimeOwner,
+      updatedAtMs: 8_000,
+      state: { nextRunAtMs: 9_000, lastRunAtMs: 8_000, lastRunStatus: "ok" as const },
+    };
+    runOpenClawStateWriteTransaction(({ db }) => {
+      updateCronRuntimeRows(db, cronStoreKey(storePath), {
+        version: 1,
+        jobs: [advancedRuntime],
+      });
+    });
+
+    const staleSibling = expectDefined(
+      staleSnapshot.jobs.find((job) => job.id === sibling.id),
+      "expected stale sibling cron job",
+    );
+    staleSibling.description = "updated through the management gateway";
+    staleSibling.updatedAtMs = 2_000;
+    await saveCronStore(storePath, staleSnapshot);
+
+    const persistedById = new Map(
+      (await loadCronStore(storePath)).jobs.map((job) => [job.id, job]),
+    );
+    expect(persistedById.get(runtimeOwner.id)).toMatchObject(advancedRuntime);
+    expect(persistedById.get(sibling.id)?.description).toBe(
+      "updated through the management gateway",
+    );
+  });
 
   it("throws when doctor migration reads invalid legacy JSON", async () => {
     const store = await makeStorePath();
