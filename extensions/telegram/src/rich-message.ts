@@ -50,7 +50,7 @@ export function inlineTelegramRichMessageMediaUploads(
       return value;
     }
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      Object.entries(value).map(([key, item]) => [
         key,
         key === "media" && typeof item === "string" && uploads.has(item)
           ? uploads.get(item)
@@ -58,6 +58,7 @@ export function inlineTelegramRichMessageMediaUploads(
       ]),
     );
   };
+  // SAFETY: inline() preserves the block tree shape and only swaps registered tg:// media URLs for their InputFile uploads.
   return { ...rest, blocks: inline(rest.blocks) as InputRichBlock[] };
 }
 

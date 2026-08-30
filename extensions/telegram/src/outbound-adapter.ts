@@ -466,9 +466,10 @@ export async function sendTelegramPayloadMessages(params: {
         mediaUrls: remainingMediaUrls,
         fallbackResult: richResult,
         sendNoMedia: async () => richResult,
+        // The rich send above already used the single-use implicit reply target.
         send: async ({ mediaUrl, index }) =>
           await params.send(params.to, "", {
-            ...payloadOpts,
+            ...consumedImplicitReplyPayloadOpts,
             ...projectionOptions(index === remainingMediaUrls.length - 1),
             mediaUrl,
           }),
