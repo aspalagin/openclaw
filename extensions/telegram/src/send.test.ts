@@ -1496,15 +1496,15 @@ describe("sendMessageTelegram", () => {
     const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
     expect(richMessage?.blocks).toMatchObject([
       { type: "paragraph", text: "Before" },
-      { type: "photo", photo: { media: "tg://photo?id=media1" } },
+      {
+        type: "photo",
+        photo: { media: { fileData: Buffer.from("local image"), filename: "chart.png" } },
+      },
       { type: "paragraph", text: "after" },
     ]);
-    const media = richMessage?.media?.[0];
-    expect(media).toMatchObject({ id: "media1", media: { type: "photo" } });
-    expect(media?.media.media).toMatchObject({
-      fileData: Buffer.from("local image"),
-      filename: "chart.png",
-    });
+    // Typed blocks carry the upload itself; a media array would make the
+    // server parse tg:// links in blocks as remote file identifiers.
+    expect(richMessage?.media).toBeUndefined();
   });
 
   it("rejects a rich local image outside the allowed media directories", async () => {
@@ -1562,16 +1562,13 @@ describe("sendMessageTelegram", () => {
       {
         type: "slideshow",
         blocks: [
-          { type: "photo", photo: { media: "tg://photo?id=media1" } },
+          { type: "photo", photo: { media: { filename: "first.png" } } },
           { type: "photo", photo: { media: "https://example.com/remote.jpg" } },
-          { type: "photo", photo: { media: "tg://photo?id=media2" } },
+          { type: "photo", photo: { media: { filename: "second.jpg" } } },
         ],
       },
     ]);
-    expect(richMessage?.media).toMatchObject([
-      { id: "media1", media: { type: "photo" } },
-      { id: "media2", media: { type: "photo" } },
-    ]);
+    expect(richMessage?.media).toBeUndefined();
   });
 
   it("resends the original local file as legacy media when the rich upload is rejected", async () => {

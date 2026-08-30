@@ -28,6 +28,39 @@ export type TelegramInputRichMessageMedia = {
   };
 };
 
+// The Bot API resolves tg://<type>?id= links against `media` only for the
+// html/markdown source fields; typed blocks must carry the upload itself
+// (InputMedia<InputFile>), or the server parses the link as a remote file_id
+// ("wrong remote file identifier specified", live-verified).
+export function inlineTelegramRichMessageMediaUploads(
+  richMessage: TelegramInputRichMessage,
+): Omit<TelegramInputRichMessage, "media"> {
+  const { media, ...rest } = richMessage;
+  if (!media?.length) {
+    return rest;
+  }
+  const uploads = new Map(
+    media.map((entry) => [`tg://${entry.media.type}?id=${entry.id}`, entry.media.media]),
+  );
+  const inline = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value.map(inline);
+    }
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        key === "media" && typeof item === "string" && uploads.has(item)
+          ? uploads.get(item)
+          : inline(item),
+      ]),
+    );
+  };
+  return { ...rest, blocks: inline(rest.blocks) as InputRichBlock[] };
+}
+
 type TelegramRichMessageOptions = {
   skipEntityDetection?: boolean;
   tableMode?: MarkdownTableMode;
