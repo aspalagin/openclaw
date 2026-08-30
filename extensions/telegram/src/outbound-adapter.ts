@@ -34,6 +34,10 @@ import {
   resolveTelegramPromptContextSource,
 } from "./prompt-context-projection.js";
 import { registerTelegramQuestionDelivery } from "./question-finalization.js";
+import {
+  isTelegramRichLocalMediaSource,
+  resolveTelegramRichLocalMedia,
+} from "./rich-local-media.js";
 import { loadTelegramSendModule, type TelegramSendModule } from "./send-runtime.js";
 import { normalizeTelegramOutboundTarget, parseTelegramTarget } from "./targets.js";
 import { resolveTelegramTextChunkLimit, TELEGRAM_TEXT_CHUNK_LIMIT } from "./text-chunk-limit.js";
@@ -419,6 +423,59 @@ export async function sendTelegramPayloadMessages(params: {
     return { messageId: String(replyToMessageId), chatId: params.to };
   }
 
+  const richMessages = telegramRichTablesEnabled({
+    cfg: params.baseOpts.cfg,
+    accountId: params.baseOpts.accountId,
+    htmlTextMode: params.baseOpts.textMode === "html",
+  });
+  if (
+    richMessages &&
+    params.baseOpts.forceDocument !== true &&
+    text.trim() &&
+    mediaUrls.some(isTelegramRichLocalMediaSource)
+  ) {
+    const accountConfig = mergeTelegramAccountConfig(
+      params.baseOpts.cfg,
+      params.baseOpts.accountId ?? resolveDefaultTelegramAccountId(params.baseOpts.cfg),
+    );
+    const resolved = await resolveTelegramRichLocalMedia({
+      text,
+      mediaUrls,
+      mediaAccess: params.baseOpts.mediaAccess,
+      mediaLocalRoots: params.baseOpts.mediaLocalRoots,
+      mediaReadFile: params.baseOpts.mediaReadFile,
+      maxBytes:
+        (typeof accountConfig.mediaMaxMb === "number" ? accountConfig.mediaMaxMb : 100) *
+        1024 *
+        1024,
+    });
+    // Attachments that stay on the legacy path keep their payload order.
+    const remainingMediaUrls = resolved.unconsumedMediaUrls;
+    if (resolved.text.trim()) {
+      const richResult = await params.send(params.to, resolved.text, {
+        ...payloadOpts,
+        ...projectionOptions(remainingMediaUrls.length === 0),
+        buttons,
+        richLocalMedia: resolved.media,
+      });
+      if (remainingMediaUrls.length === 0) {
+        return richResult;
+      }
+      return await sendPayloadMediaSequenceOrFallback({
+        text: "",
+        mediaUrls: remainingMediaUrls,
+        fallbackResult: richResult,
+        sendNoMedia: async () => richResult,
+        send: async ({ mediaUrl, index }) =>
+          await params.send(params.to, "", {
+            ...payloadOpts,
+            ...projectionOptions(index === remainingMediaUrls.length - 1),
+            mediaUrl,
+          }),
+      });
+    }
+  }
+
   // Telegram allows reply_markup on media; attach buttons only to the first send.
   return await sendPayloadMediaSequenceOrFallback({
     text,
@@ -479,6 +536,12 @@ export function createTelegramOutboundAdapter(
     preferFinalAssistantVisibleText: options.preferFinalAssistantVisibleText,
     normalizePayload: ({ payload }) => normalizeTelegramMetadataOnlyPayload(payload),
     normalizePayloadBatch: ({ payloads }) => normalizeTelegramFallbackPayloadBatch(payloads),
+    preferPayloadForMedia: ({ payload, cfg, accountId, forceDocument }) =>
+      forceDocument !== true &&
+      typeof payload.text === "string" &&
+      payload.text.trim().length > 0 &&
+      resolveSendableOutboundReplyParts(payload).mediaUrls.some(isTelegramRichLocalMediaSource) &&
+      telegramRichTablesEnabled({ cfg, accountId, htmlTextMode: false }),
     presentationCapabilities: resolveTelegramPresentationCapabilities({ richMessages: false }),
     resolvePresentationCapabilities: ({ cfg, accountId, formatting }) =>
       resolveTelegramPresentationCapabilities({

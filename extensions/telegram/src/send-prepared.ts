@@ -164,6 +164,7 @@ export function createTelegramPreparedSender(config: {
     tracking: Tracking;
     /** Durable text drains definite rejected fallback parts; direct replies stop that page. */
     drainFallback?: boolean;
+    onPlainFallback?: (page: TelegramTextDeliveryPage) => void;
   }) => {
     const start = parts.length;
     const tracker = createTelegramChunkDeliveryTracker({
@@ -226,6 +227,7 @@ export function createTelegramPreparedSender(config: {
         page,
         context: params.context,
         warn: config.warn,
+        onPlainFallback: params.onPlainFallback,
         sender: {
           sendPlain: (text, fallback, label) => sendPlainOrHtml(text, false, fallback, label),
           sendHtml: (text) => sendPlainOrHtml(text, true),

@@ -207,6 +207,13 @@ export type ChannelOutboundAdapter = {
     params: ChannelOutboundNormalizePayloadBatchParams,
   ) => ReadonlyArray<ReplyPayload | null>;
   sendTextOnlyErrorPayloads?: boolean;
+  /** Route text and local media together when the channel can embed the media in its payload. */
+  preferPayloadForMedia?: (params: {
+    payload: ReplyPayload;
+    cfg: OpenClawConfig;
+    accountId?: string | null;
+    forceDocument?: boolean;
+  }) => boolean;
   shouldSkipPlainTextSanitization?: (params: { payload: ReplyPayload }) => boolean;
   resolveEffectiveTextChunkLimit?: (params: {
     cfg: OpenClawConfig;

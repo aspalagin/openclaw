@@ -8,6 +8,12 @@ const pinMessageTelegramMock = vi.fn();
 const reactMessageTelegramMock = vi.fn();
 const sendPollTelegramMock = vi.fn();
 const sendLocationTelegramMock = vi.fn();
+const loadWebMediaMock = vi.fn();
+
+vi.mock("./send.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./send.runtime.js")>()),
+  loadWebMedia: (...args: unknown[]) => loadWebMediaMock(...args),
+}));
 
 vi.mock("./send.js", () => ({
   pinMessageTelegram: (...args: unknown[]) => pinMessageTelegramMock(...args),
@@ -69,6 +75,7 @@ describe("telegramOutbound", () => {
     sendPollTelegramMock.mockReset();
     sendMessageTelegramMock.mockReset();
     sendLocationTelegramMock.mockReset();
+    loadWebMediaMock.mockReset();
   });
 
   it("forwards workspace-scoped media access in direct media sends", async () => {
@@ -109,6 +116,80 @@ describe("telegramOutbound", () => {
       mediaAccess,
     );
     expect(result).toEqual({ channel: "telegram", messageId: "tg-media" });
+  });
+
+  it("prefers the payload route only for rich text with local media", () => {
+    const payload = { text: "Chart", mediaUrls: ["/workspace/chart.png"] };
+    expect(
+      telegramOutbound.preferPayloadForMedia?.({
+        payload,
+        cfg: { channels: { telegram: { richMessages: true } } } as never,
+      }),
+    ).toBe(true);
+    expect(
+      telegramOutbound.preferPayloadForMedia?.({
+        payload,
+        cfg: { channels: { telegram: { richMessages: true } } } as never,
+        forceDocument: true,
+      }),
+    ).toBe(false);
+    expect(
+      telegramOutbound.preferPayloadForMedia?.({
+        payload: { text: "Chart", mediaUrls: ["https://example.com/chart.png"] },
+        cfg: { channels: { telegram: { richMessages: true } } } as never,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps legacy-path attachments in payload order beside embedded local media", async () => {
+    loadWebMediaMock.mockImplementation(async (source: string) =>
+      source.endsWith(".mp3")
+        ? { buffer: Buffer.from("audio"), contentType: "audio/mpeg", fileName: "track.mp3" }
+        : { buffer: Buffer.from("pdf"), contentType: "application/pdf", fileName: "notes.pdf" },
+    );
+    sendMessageTelegramMock.mockResolvedValue({ messageId: "tg-1", chatId: "12345" });
+
+    await telegramOutbound.sendPayload!({
+      cfg: { channels: { telegram: { richMessages: true } } } as never,
+      to: "12345",
+      text: "",
+      payload: {
+        text: "Report",
+        mediaUrls: [
+          "https://example.com/a.jpg",
+          "/workspace/notes.pdf",
+          "https://example.com/b.jpg",
+          "/workspace/track.mp3",
+        ],
+      },
+      mediaLocalRoots: ["/workspace"],
+      deps: { sendTelegram: sendMessageTelegramMock },
+    });
+
+    expect(loadWebMediaMock.mock.calls.map(([source]) => source)).toEqual([
+      "/workspace/notes.pdf",
+      "/workspace/track.mp3",
+    ]);
+    expect(sendMessageTelegramMock).toHaveBeenCalledTimes(4);
+    const richOptions = callOptionsAt(
+      sendMessageTelegramMock,
+      0,
+      "12345",
+      'Report\n\n<figure><audio src="tg://audio?id=media1"/></figure>',
+    );
+    expect(richOptions.mediaUrl).toBeUndefined();
+    expect(richOptions.richLocalMedia).toMatchObject([
+      { id: "media1", source: "/workspace/track.mp3", media: { type: "audio" } },
+    ]);
+    expect(
+      sendMessageTelegramMock.mock.calls
+        .slice(1)
+        .map((call) => [call[1], (call[2] as { mediaUrl?: string }).mediaUrl]),
+    ).toEqual([
+      ["", "https://example.com/a.jpg"],
+      ["", "/workspace/notes.pdf"],
+      ["", "https://example.com/b.jpg"],
+    ]);
   });
 
   it("sends payload media in sequence and keeps buttons on the first message only", async () => {

@@ -357,6 +357,15 @@ function createPluginHandler(
         }
       : undefined,
     sendTextOnlyErrorPayloads: outbound?.sendTextOnlyErrorPayloads === true,
+    preferPayloadForMedia: outbound?.preferPayloadForMedia
+      ? (payload, overrides) =>
+          outbound.preferPayloadForMedia!({
+            payload,
+            cfg: params.cfg,
+            accountId: params.accountId,
+            forceDocument: overrides?.forceDocument,
+          })
+      : undefined,
     presentationCapabilities: outbound?.resolvePresentationCapabilities
       ? outbound.resolvePresentationCapabilities({
           cfg: params.cfg,

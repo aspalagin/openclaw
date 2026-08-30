@@ -1466,6 +1466,183 @@ describe("sendMessageTelegram", () => {
     );
   });
 
+  it("uploads an allowed local image into one rich message beside its text", async () => {
+    botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("local image"),
+      contentType: "image/png",
+      fileName: "chart.png",
+    });
+
+    await sendMessageTelegram(
+      "123",
+      'Before <figure><img src="/workspace/chart.png"/></figure> after',
+      {
+        cfg: { channels: { telegram: { richMessages: true } } },
+        token: "tok",
+        mediaLocalRoots: ["/workspace"],
+      },
+    );
+
+    expect(loadWebMedia).toHaveBeenCalledWith(
+      "/workspace/chart.png",
+      expect.objectContaining({
+        localRoots: ["/workspace"],
+        maxBytes: 100 * 1024 * 1024,
+      }),
+    );
+    expect(botRawApi.sendRichMessage).toHaveBeenCalledTimes(1);
+    expect(botApi.sendMessage).not.toHaveBeenCalled();
+    const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+    expect(richMessage?.blocks).toMatchObject([
+      { type: "paragraph", text: "Before" },
+      { type: "photo", photo: { media: "tg://photo?id=media1" } },
+      { type: "paragraph", text: "after" },
+    ]);
+    const media = richMessage?.media?.[0];
+    expect(media).toMatchObject({ id: "media1", media: { type: "photo" } });
+    expect(media?.media.media).toMatchObject({
+      fileData: Buffer.from("local image"),
+      filename: "chart.png",
+    });
+  });
+
+  it("rejects a rich local image outside the allowed media directories", async () => {
+    loadWebMedia.mockRejectedValueOnce(
+      new Error("Local media path is not under an allowed directory: /private/chart.png"),
+    );
+
+    await expect(
+      sendMessageTelegram("123", '<img src="/private/chart.png"/>', {
+        cfg: { channels: { telegram: { richMessages: true } } },
+        token: "tok",
+        mediaLocalRoots: ["/workspace"],
+      }),
+    ).rejects.toThrow("Local media path is not under an allowed directory: /private/chart.png");
+
+    expect(botRawApi.sendRichMessage).not.toHaveBeenCalled();
+  });
+
+  it("embeds local media in a mixed slideshow without loading HTTPS sources", async () => {
+    botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+    loadWebMedia
+      .mockResolvedValueOnce({
+        buffer: Buffer.from("first image"),
+        contentType: "image/png",
+        fileName: "first.png",
+      })
+      .mockResolvedValueOnce({
+        buffer: Buffer.from("second image"),
+        contentType: "image/jpeg",
+        fileName: "second.jpg",
+      });
+
+    await sendMessageTelegram(
+      "123",
+      [
+        "<tg-slideshow>",
+        '<img src="/workspace/first.png"/>',
+        '<img src="https://example.com/remote.jpg"/>',
+        '<img src="/workspace/second.jpg"/>',
+        "</tg-slideshow>",
+      ].join(""),
+      {
+        cfg: { channels: { telegram: { richMessages: true } } },
+        token: "tok",
+        mediaLocalRoots: ["/workspace"],
+      },
+    );
+
+    expect(loadWebMedia.mock.calls.map(([source]) => source)).toEqual([
+      "/workspace/first.png",
+      "/workspace/second.jpg",
+    ]);
+    const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+    expect(richMessage?.blocks).toMatchObject([
+      {
+        type: "slideshow",
+        blocks: [
+          { type: "photo", photo: { media: "tg://photo?id=media1" } },
+          { type: "photo", photo: { media: "https://example.com/remote.jpg" } },
+          { type: "photo", photo: { media: "tg://photo?id=media2" } },
+        ],
+      },
+    ]);
+    expect(richMessage?.media).toMatchObject([
+      { id: "media1", media: { type: "photo" } },
+      { id: "media2", media: { type: "photo" } },
+    ]);
+  });
+
+  it("resends the original local file as legacy media when the rich upload is rejected", async () => {
+    botRawApi.sendRichMessage.mockRejectedValueOnce(createRichEntityInvalidError("MEDIA"));
+    botApi.sendMessage.mockResolvedValueOnce({ message_id: 47, chat: { id: "123" } });
+    botApi.sendPhoto.mockResolvedValueOnce({ message_id: 48, chat: { id: "123" } });
+    loadWebMedia.mockResolvedValue({
+      buffer: Buffer.from("local image"),
+      contentType: "image/png",
+      fileName: "chart.png",
+    });
+
+    const result = await sendMessageTelegram(
+      "123",
+      'Before <figure><img src="/workspace/chart.png"/></figure> after',
+      {
+        cfg: { channels: { telegram: { richMessages: true } } },
+        token: "tok",
+        mediaLocalRoots: ["/workspace"],
+        buttons: [[{ text: "OK", callback_data: "ok" }]],
+      },
+    );
+
+    expect(botRawApi.sendRichMessage).toHaveBeenCalledTimes(1);
+    expect(botApi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(botApi.sendMessage).toHaveBeenCalledWith("123", "Before\nchart.png\nafter", {
+      reply_markup: { inline_keyboard: [[{ text: "OK", callback_data: "ok" }]] },
+    });
+    expect(loadWebMedia.mock.calls.map(([source]) => source)).toEqual([
+      "/workspace/chart.png",
+      "/workspace/chart.png",
+    ]);
+    expect(botApi.sendPhoto).toHaveBeenCalledTimes(1);
+    const [photoChatId, photo, photoParams] = firstMockCall(botApi.sendPhoto, "send photo call");
+    expect(photoChatId).toBe("123");
+    expect(photo).toMatchObject({ fileData: Buffer.from("local image") });
+    expect((photoParams as { reply_markup?: unknown } | undefined)?.reply_markup).toBeUndefined();
+    expect(result).toMatchObject({ messageId: "48", chatId: "123" });
+    expect(result.receipt?.platformMessageIds).toEqual(["47", "48"]);
+  });
+
+  it("reports the plain fallback as partial delivery when the local resend fails", async () => {
+    botRawApi.sendRichMessage.mockRejectedValueOnce(createRichEntityInvalidError("MEDIA"));
+    botApi.sendMessage.mockResolvedValueOnce({ message_id: 47, chat: { id: "123" } });
+    botApi.sendPhoto.mockRejectedValueOnce(new Error("photo upload failed"));
+    loadWebMedia.mockResolvedValue({
+      buffer: Buffer.from("local image"),
+      contentType: "image/png",
+      fileName: "chart.png",
+    });
+
+    let observed: unknown;
+    try {
+      await sendMessageTelegram("123", '<img src="/workspace/chart.png"/>', {
+        cfg: { channels: { telegram: { richMessages: true } } },
+        token: "tok",
+        mediaLocalRoots: ["/workspace"],
+      });
+    } catch (error) {
+      observed = error;
+    }
+
+    expect(botApi.sendMessage).toHaveBeenCalledWith("123", "chart.png");
+    expect(isChannelPartialDeliveryError(observed)).toBe(true);
+    if (!isChannelPartialDeliveryError(observed)) {
+      throw observed;
+    }
+    expect(observed.deliveryResult.messageIds).toEqual(["47"]);
+    expect(observed.deliveryResult.visibleReplySent).toBe(true);
+  });
+
   it("continues rich plain-fallback chunks after a middle rejection", async () => {
     const text = `Status includes openai:owner@example.com ${"A".repeat(8500)}`;
     const storePath = `/tmp/openclaw-telegram-projection-rich-fallback-${process.pid}-${Date.now()}.json`;

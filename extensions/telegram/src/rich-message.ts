@@ -1,4 +1,4 @@
-import type { Bot } from "grammy";
+import type { Bot, InputFile } from "grammy";
 import type { InputRichMessage, ReplyParameters } from "grammy/types";
 import type { MarkdownTableMode } from "openclaw/plugin-sdk/config-contracts";
 import {
@@ -17,6 +17,15 @@ const TELEGRAM_RICH_BLOCK_LIMIT = 500;
 // literal-newline and chunking semantics match what HTML callers authored against.
 export type TelegramInputRichMessage = Omit<InputRichMessage, "blocks"> & {
   blocks: InputRichBlock[];
+  media?: TelegramInputRichMessageMedia[];
+};
+
+export type TelegramInputRichMessageMedia = {
+  id: string;
+  media: {
+    type: "photo" | "video" | "audio";
+    media: InputFile;
+  };
 };
 
 type TelegramRichMessageOptions = {

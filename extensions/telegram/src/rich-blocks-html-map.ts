@@ -42,7 +42,12 @@ const BLOCK_ISLAND_TAGS = new Set([
   "a",
 ]);
 
-const MEDIA_SRC_RE = /^https:\/\//i;
+const MEDIA_SRC_RE = /^(?:https:\/\/|tg:\/\/(?:photo|video|audio)\?id=[A-Za-z0-9_-]{1,64}$)/i;
+
+function isTelegramRichMediaSourceForElement(src: string, element: string) {
+  const match = /^tg:\/\/(photo|video|audio)\?id=[A-Za-z0-9_-]{1,64}$/i.exec(src);
+  return !match || match[1] === (element === "img" ? "photo" : element);
+}
 
 // True when a container holds meaningful content outside its allowed children;
 // such islands stay literal instead of silently dropping the stray content.
@@ -63,7 +68,7 @@ function mediaBlockFromElement(
   const hasBody = node.children.some((child) =>
     child.kind === "text" ? child.text.trim() !== "" : true,
   );
-  if (!MEDIA_SRC_RE.test(src) || hasBody) {
+  if (!MEDIA_SRC_RE.test(src) || !isTelegramRichMediaSourceForElement(src, node.name) || hasBody) {
     return undefined;
   }
   const withCaption = caption ? { caption } : {};
