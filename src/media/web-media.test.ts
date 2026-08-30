@@ -1285,18 +1285,55 @@ describe("loadWebMedia", () => {
     expect(result.contentType).toBe("application/epub+zip");
   });
 
+  const FICTIONBOOK_DOCUMENT =
+    '<?xml version="1.0" encoding="utf-8"?>\n<!-- exported -->\n' +
+    '<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">' +
+    "<description/></FictionBook>";
+
   it.each(["book.fb2", "book.xml"])(
-    "allows validated host-read FictionBook text for %s",
+    "allows validated host-read FictionBook documents for %s",
     async (fileName) => {
-      const result = await loadDocumentWithHostRead(
-        fileName,
-        '<?xml version="1.0" encoding="utf-8"?><FictionBook><description/></FictionBook>',
-      );
+      const result = await loadDocumentWithHostRead(fileName, FICTIONBOOK_DOCUMENT);
 
       expect(result.kind).toBe("document");
       expect(result.contentType).toBe("text/xml");
     },
   );
+
+  it("allows a prefixed FictionBook root behind an XML doctype", async () => {
+    const result = await loadDocumentWithHostRead(
+      "prefixed.fb2",
+      '\uFEFF<?xml version="1.0"?><!DOCTYPE FictionBook>' +
+        "<fb:FictionBook xmlns:fb='http://www.gribuser.ru/xml/fictionbook/2.0'/>",
+    );
+
+    expect(result.kind).toBe("document");
+  });
+
+  it.each([
+    {
+      name: "generic XML with a .xml extension",
+      fileName: "settings.xml",
+      body: '<?xml version="1.0" encoding="utf-8"?><settings><option name="theme">dark</option></settings>',
+    },
+    {
+      name: "generic XML with a .fb2 extension",
+      fileName: "settings.fb2",
+      body: '<?xml version="1.0" encoding="utf-8"?><settings><option name="theme">dark</option></settings>',
+    },
+    {
+      name: "a FictionBook root without the FictionBook namespace",
+      fileName: "unnamespaced.xml",
+      body: '<?xml version="1.0" encoding="utf-8"?><FictionBook><description/></FictionBook>',
+    },
+    {
+      name: "a FictionBook element nested below a foreign root",
+      fileName: "wrapped.xml",
+      body: '<?xml version="1.0"?><settings><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"/></settings>',
+    },
+  ])("rejects text-valid host-read $name", async ({ fileName, body }) => {
+    await expectLoadWebMediaErrorCode(loadDocumentWithHostRead(fileName, body), "path-not-allowed");
+  });
 
   it("rejects binary data disguised as a FictionBook file", async () => {
     const filePath = path.join(fixtureRoot, "not-a-book.fb2");

@@ -314,6 +314,19 @@ function hasHtmlDocumentShape(text: string): boolean {
   return /^(?:<!doctype\s+html\b|<html\b)/iu.test(sample) || /<\/(?:html|body)>/iu.test(sample);
 }
 
+// FictionBook documents carry a fixed namespace on their root element. Match only that
+// root (after an optional BOM, XML declaration, comments, or doctype) so host-read
+// accepts demonstrable FictionBook content rather than every text-valid XML file.
+const FICTIONBOOK_ROOT_RE =
+  /^\uFEFF?(?:\s*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>))*\s*<(?:[A-Za-z_][\w.-]*:)?FictionBook(?=[\s/>])([^>]*)>/u;
+const FICTIONBOOK_NAMESPACE_RE =
+  /(?:^|\s)xmlns(?::[A-Za-z_][\w.-]*)?\s*=\s*(["'])http:\/\/www\.gribuser\.ru\/xml\/fictionbook\/[^"']*\1/u;
+
+function hasFictionBookDocumentShape(text: string): boolean {
+  const root = FICTIONBOOK_ROOT_RE.exec(text.slice(0, 8192));
+  return root !== null && FICTIONBOOK_NAMESPACE_RE.test(root[1] ?? "");
+}
+
 type HostReadHtmlTrust =
   | { source: "temp-root" }
   | { source: "outbound"; expectedSha256: string; expectedSize: number };
@@ -506,11 +519,16 @@ function isAllowedHostReadFictionBook(params: {
   buffer?: Buffer;
 }): boolean {
   const sniffedMime = normalizeMimeType(params.sniffedContentType);
-  return (
-    (sniffedMime === "application/xml" || sniffedMime === "text/xml" || !sniffedMime) &&
-    [".fb2", ".xml"].includes(getFileExtension(params.filePath) ?? "") &&
-    isValidatedHostReadText(params.buffer)
-  );
+  if (sniffedMime && sniffedMime !== "application/xml" && sniffedMime !== "text/xml") {
+    return false;
+  }
+  if (![".fb2", ".xml"].includes(getFileExtension(params.filePath) ?? "")) {
+    return false;
+  }
+  // The extension only signals operator intent; the accept decision is content-based for
+  // both .fb2 and .xml so the host-read boundary stays format-specific.
+  const text = getValidatedHostReadText(params.buffer);
+  return text !== undefined && hasFictionBookDocumentShape(text);
 }
 
 function formatCapLimit(label: string, cap: number, size: number): string {
@@ -618,7 +636,7 @@ function assertHostReadMediaAllowed(params: {
     );
   }
   throw new HostReadMediaTypeError(
-    `Host-local media sends only allow buffer-verified images, audio, video, PDF, Office documents, EPUBs, archives, and validated plain-text documents (got ${sniffedMime ?? normalizedMime ?? "unknown"}).`,
+    `Host-local media sends only allow buffer-verified images, audio, video, PDF, Office documents, EPUBs, FictionBook documents, archives, and validated plain-text documents (got ${sniffedMime ?? normalizedMime ?? "unknown"}).`,
   );
 }
 
