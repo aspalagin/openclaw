@@ -209,7 +209,9 @@ const NON_TARGET_PATH_ERROR_CODES = new Set([
 async function hasVaultMarkdownPathTarget(
   vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
   rawTarget: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   if (!isLintPathStyleTarget(rawTarget)) {
     return false;
   }
@@ -232,8 +234,10 @@ async function hasVaultMarkdownPathTarget(
       symlinks: "reject",
     });
     await opened.handle.close();
+    signal?.throwIfAborted();
     return true;
   } catch (error) {
+    signal?.throwIfAborted();
     const code =
       typeof error === "object" &&
       error !== null &&
@@ -251,27 +255,33 @@ async function hasVaultMarkdownPathTarget(
 async function collectBrokenLinkIssues(
   rootDir: string,
   pages: WikiPageSummary[],
+  signal?: AbortSignal,
 ): Promise<MemoryWikiLintIssue[]> {
+  signal?.throwIfAborted();
   const validTargets = buildWikiLinkTargetIndex(pages);
   const vaultRoot = await createFsSafeRoot(rootDir, {
     hardlinks: "allow",
     mkdir: false,
     symlinks: "reject",
   });
+  signal?.throwIfAborted();
   const directPathTargets = new Map<string, Promise<boolean>>();
 
   const issues: MemoryWikiLintIssue[] = [];
   for (const page of pages) {
+    signal?.throwIfAborted();
     for (const linkTarget of page.linkTargets) {
+      signal?.throwIfAborted();
       let valid = hasValidWikiLinkTarget(validTargets, linkTarget);
       if (!valid && isLintPathStyleTarget(linkTarget)) {
         const cacheKey = normalizeLintPathTarget(linkTarget);
         let pending = directPathTargets.get(cacheKey);
         if (!pending) {
-          pending = hasVaultMarkdownPathTarget(vaultRoot, linkTarget);
+          pending = hasVaultMarkdownPathTarget(vaultRoot, linkTarget, signal);
           directPathTargets.set(cacheKey, pending);
         }
         valid = await pending;
+        signal?.throwIfAborted();
       }
       if (!valid) {
         issues.push({
@@ -291,12 +301,14 @@ async function collectPageIssues(
   rootDir: string,
   pages: WikiPageSummary[],
   managedImportedSourcePagePaths: Set<string>,
+  signal?: AbortSignal,
 ): Promise<MemoryWikiLintIssue[]> {
   const issues: MemoryWikiLintIssue[] = [];
   const pagesById = new Map<string, WikiPageSummary[]>();
   const claimHealth = collectWikiClaimHealth(pages);
 
   for (const page of pages) {
+    signal?.throwIfAborted();
     const requiresStructuredPageMetadata = !isUnmanagedRawSourcePage(
       page,
       managedImportedSourcePagePaths,
@@ -488,7 +500,7 @@ async function collectPageIssues(
     }
   }
 
-  issues.push(...(await collectBrokenLinkIssues(rootDir, pages)));
+  issues.push(...(await collectBrokenLinkIssues(rootDir, pages, signal)));
   return issues.toSorted((left, right) => left.path.localeCompare(right.path));
 }
 
@@ -603,6 +615,7 @@ export async function lintMemoryWikiVault(
   );
   options.signal?.throwIfAborted();
   const sourceSyncState = await readMemoryWikiSourceSyncState(config.vault.path);
+  options.signal?.throwIfAborted();
   const managedImportedSourcePagePaths = new Set(
     Object.values(sourceSyncState.entries).map((entry) => entry.pagePath.split(path.sep).join("/")),
   );
@@ -620,9 +633,11 @@ export async function lintMemoryWikiVault(
       config.vault.path,
       compileResult.pages,
       managedImportedSourcePagePaths,
+      options.signal,
     )),
   ].toSorted((left, right) => left.path.localeCompare(right.path));
   const issuesByCategory = buildIssuesByCategory(issues);
+  options.signal?.throwIfAborted();
   const reportPath = await writeLintReport(config.vault.path, issues);
   options.signal?.throwIfAborted();
 
