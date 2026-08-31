@@ -642,6 +642,41 @@ describe("lintMemoryWikiVault", () => {
     });
   });
 
+  it("does not spend the fallback path budget on rejected targets", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-lint-vault-wide-rejected-budget-",
+      config: {
+        vault: { renderMode: "obsidian" },
+      },
+    });
+    await Promise.all(
+      ["sources", "people"].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
+    );
+    const rejectedLinks = Array.from(
+      { length: MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS + 1 },
+      (_, index) => `[[.GiT/private-${index}]]`,
+    );
+    await fs.writeFile(
+      path.join(rootDir, "sources", "references.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.references",
+          title: "References",
+        },
+        body: ["# References", "", ...rejectedLinks, "[[people/ada-lovelace]]"].join("\n"),
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
+
+    const result = await lintMemoryWikiVault(config);
+
+    expect(result.issues.filter((issue) => issue.code === "broken-wikilink")).toHaveLength(
+      rejectedLinks.length,
+    );
+  });
+
   it("keeps direct fallback path spelling exact on case-insensitive filesystems", async () => {
     const { rootDir, config } = await createVault({
       prefix: "memory-wiki-lint-vault-wide-exact-case-",

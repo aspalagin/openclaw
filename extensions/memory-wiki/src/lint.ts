@@ -230,15 +230,9 @@ async function hasExactVaultPathSpelling(
   return true;
 }
 
-async function hasVaultMarkdownPathTarget(
-  vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
-  rawTarget: string,
-  directoryEntries: Map<string, Promise<Set<string>>>,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  signal?.throwIfAborted();
+function resolveLintFallbackMarkdownPath(rawTarget: string): string | undefined {
   if (!isLintPathStyleTarget(rawTarget)) {
-    return false;
+    return undefined;
   }
   const normalized = normalizeLintPathTarget(rawTarget);
   const segments = normalized.split("/").filter(Boolean);
@@ -251,9 +245,18 @@ async function hasVaultMarkdownPathTarget(
       MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES.has(foldMemoryWikiDirectoryName(segment)),
     )
   ) {
-    return false;
+    return undefined;
   }
-  const requestedPath = `${normalized}.md`;
+  return `${normalized}.md`;
+}
+
+async function hasVaultMarkdownPathTarget(
+  vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
+  requestedPath: string,
+  directoryEntries: Map<string, Promise<Set<string>>>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  signal?.throwIfAborted();
   try {
     if (!(await hasExactVaultPathSpelling(vaultRoot, requestedPath, directoryEntries, signal))) {
       return false;
@@ -313,19 +316,26 @@ async function collectBrokenLinkIssues(
       signal?.throwIfAborted();
       let valid = hasValidWikiLinkTarget(validTargets, linkTarget);
       if (!valid && isLintPathStyleTarget(linkTarget)) {
-        const cacheKey = normalizeLintPathTarget(linkTarget);
-        let pending = directPathTargets.get(cacheKey);
-        if (!pending) {
-          if (directPathTargets.size >= MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS) {
-            throw new Error(
-              `Memory Wiki lint fallback path check budget exceeded (${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique targets)`,
+        const requestedPath = resolveLintFallbackMarkdownPath(linkTarget);
+        if (requestedPath) {
+          let pending = directPathTargets.get(requestedPath);
+          if (!pending) {
+            if (directPathTargets.size >= MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS) {
+              throw new Error(
+                `Memory Wiki lint fallback path check budget exceeded (${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique targets)`,
+              );
+            }
+            pending = hasVaultMarkdownPathTarget(
+              vaultRoot,
+              requestedPath,
+              directoryEntries,
+              signal,
             );
+            directPathTargets.set(requestedPath, pending);
           }
-          pending = hasVaultMarkdownPathTarget(vaultRoot, linkTarget, directoryEntries, signal);
-          directPathTargets.set(cacheKey, pending);
+          valid = await pending;
+          signal?.throwIfAborted();
         }
-        valid = await pending;
-        signal?.throwIfAborted();
       }
       if (!valid) {
         issues.push({
