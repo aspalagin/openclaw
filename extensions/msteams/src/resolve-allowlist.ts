@@ -12,7 +12,13 @@ import {
   type GraphGroup,
   type GraphUser,
 } from "./graph.js";
-import { normalizeMSTeamsConversationId } from "./inbound.js";
+import {
+  looksLikeMSTeamsConversationId,
+  normalizeMSTeamsConversationId,
+  normalizeMSTeamsUserInput,
+} from "./ingress-identity.js";
+
+export { looksLikeMSTeamsConversationId, normalizeMSTeamsUserInput } from "./ingress-identity.js";
 
 type MSTeamsChannelResolution = {
   input: string;
@@ -150,12 +156,6 @@ export function normalizeMSTeamsMessagingTarget(raw: string): string | undefined
   return trimmed || undefined;
 }
 
-export function normalizeMSTeamsUserInput(raw: string): string {
-  return stripProviderPrefix(raw)
-    .replace(/^(user|conversation):/i, "")
-    .trim();
-}
-
 export function parseMSTeamsConversationId(raw: string): string | null {
   const trimmed = stripProviderPrefix(raw).trim();
   if (!/^conversation:/i.test(trimmed)) {
@@ -163,48 +163,6 @@ export function parseMSTeamsConversationId(raw: string): string | null {
   }
   const id = trimmed.slice("conversation:".length).trim();
   return id;
-}
-
-/**
- * Detect whether a raw target string is a supported Microsoft Teams
- * conversation id.
- *
- * Accepts both prefixed and bare formats:
- * - `conversation:<id>` — explicit conversation prefix
- * - `19:abc@thread.tacv2` / `19:abc@thread.skype` / `19:abc@thread.v2` — group or channel
- * - `19:{userId}_{appId}@unq.gbl.spaces` — Graph 1:1 chat thread format
- * - `a:1xxx` — Bot Framework personal (1:1) chat id
- * - `8:orgid:xxx` — Bot Framework org-scoped personal chat id
- */
-export function looksLikeMSTeamsConversationId(raw: string): boolean {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return false;
-  }
-  if (/^conversation:/i.test(trimmed)) {
-    return true;
-  }
-  // Bare Bot Framework / Graph conversation id formats.
-  // Channel / group ids always start with `19:` and include an `@thread.*`
-  // suffix (`@thread.tacv2`, `@thread.v2`, or the legacy `@thread.skype`). Personal chat
-  // ids come in three shapes: `a:1...` (Bot Framework), `8:orgid:...`
-  // (org-scoped Bot Framework), and `19:{userId}_{appId}@unq.gbl.spaces`
-  // (Graph API 1:1 chat thread). Bot Framework user ids use `29:...`.
-  if (MSTEAMS_GROUP_CONVERSATION_ID.test(trimmed)) {
-    return true;
-  }
-  if (/^19:.+@unq\.gbl\.spaces$/i.test(trimmed)) {
-    return true;
-  }
-  if (/^a:1[A-Za-z0-9_-]+$/i.test(trimmed)) {
-    return true;
-  }
-  if (/^8:orgid:[A-Za-z0-9-]+$/i.test(trimmed)) {
-    return true;
-  }
-  // Fallback: anything containing @thread is still treated as a conversation
-  // id so the current matches for tenant-specific suffixes remain accepted.
-  return /@thread\b/i.test(trimmed);
 }
 
 /**

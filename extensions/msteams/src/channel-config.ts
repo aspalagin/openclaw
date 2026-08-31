@@ -7,12 +7,14 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { tryReadSecretFileSync } from "openclaw/plugin-sdk/secret-file-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { classifyMSTeamsEntryAuthentication } from "./ingress-identity.js";
 import { resolveMSTeamsCredentials } from "./token.js";
 
 export type ResolvedMSTeamsAccount = {
   accountId: string;
   enabled: boolean;
   configured: boolean;
+  config: { dangerouslyAllowNameMatching?: boolean };
   tokenStatus: "available" | "configured_unavailable" | "missing";
   credentialDiagnostics?: Extract<
     ReturnType<typeof tryReadSecretFileSync>,
@@ -50,6 +52,10 @@ export function resolveMSTeamsAccount(cfg: OpenClawConfig): ResolvedMSTeamsAccou
     accountId: DEFAULT_ACCOUNT_ID,
     enabled: config?.enabled !== false,
     configured: Boolean(credentials),
+    config:
+      typeof config?.dangerouslyAllowNameMatching === "boolean"
+        ? { dangerouslyAllowNameMatching: config.dangerouslyAllowNameMatching }
+        : {},
     tokenStatus: !credentials ? "missing" : unavailable ? "configured_unavailable" : "available",
     ...(unavailable ? { credentialDiagnostics: [certificate.diagnostic] } : {}),
   };
@@ -83,4 +89,5 @@ export const resolveMSTeamsDmPolicy = createScopedDmSecurityResolver<ResolvedMST
   policyPathSuffix: "dmPolicy",
   // Keep audit counting aligned with inbound sender-id matching; prefixes are not aliases.
   normalizeEntry: normalizeLowercaseStringOrEmpty,
+  classifyEntryAuthentication: classifyMSTeamsEntryAuthentication,
 });

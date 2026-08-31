@@ -92,6 +92,7 @@ describe("msteamsPlugin", () => {
         accountId: "default",
         enabled: true,
         configured: true,
+        config: {},
         tokenStatus: "available",
       });
       expect(plugin.config.resolveAllowFrom?.({ cfg, accountId: "default" })).toEqual([
@@ -212,6 +213,7 @@ describe("msteamsPlugin", () => {
       accountId: "default",
       enabled: true,
       configured: true,
+      config: {},
       tokenStatus: "available",
     });
   });
@@ -295,6 +297,70 @@ describe("msteamsPlugin", () => {
     expect(msteamsSetupPlugin.security?.resolveDmPolicy).toBe(
       msteamsPlugin.security?.resolveDmPolicy,
     );
+  });
+
+  it("keeps critical open-group findings on the setup security surface", async () => {
+    const cfg = {
+      channels: {
+        msteams: {
+          ...createConfiguredMSTeamsCfg().channels?.msteams,
+          groupPolicy: "open",
+        },
+      },
+    } as OpenClawConfig;
+
+    for (const plugin of [msteamsPlugin, msteamsSetupPlugin]) {
+      const collectWarnings = plugin.security?.collectWarnings;
+      if (!collectWarnings) {
+        throw new Error("msteams security.collectWarnings unavailable");
+      }
+
+      await expect(
+        collectWarnings({
+          cfg,
+          accountId: "default",
+          account: plugin.config.resolveAccount(cfg, "default"),
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          checkId: "channels.msteams.groups.open",
+          severity: "critical",
+        }),
+      ]);
+    }
+    expect(msteamsSetupPlugin.security?.collectWarnings).toBe(
+      msteamsPlugin.security?.collectWarnings,
+    );
+  });
+
+  it("classifies authored Teams identities for security audits", () => {
+    const stableId = "40a1a0ed-4ff2-4164-a219-55518990c197";
+    const cfg = {
+      channels: {
+        msteams: {
+          ...createConfiguredMSTeamsCfg().channels?.msteams,
+          dmPolicy: "allowlist",
+          allowFrom: [stableId, "Alice Example", "alice@example.com"],
+          dangerouslyAllowNameMatching: true,
+        },
+      },
+    } as OpenClawConfig;
+
+    for (const plugin of [msteamsPlugin, msteamsSetupPlugin]) {
+      const account = plugin.config.resolveAccount(cfg, "default");
+      const policy = plugin.security?.resolveDmPolicy?.({ cfg, account });
+      const classify = policy?.classifyEntryAuthentication;
+      if (!classify) {
+        throw new Error("msteams DM entry classifier unavailable");
+      }
+
+      expect(account.config).toEqual({ dangerouslyAllowNameMatching: true });
+      expect(classify(stableId)).toBe("asserted");
+      expect(classify(`teams:user:${stableId}`)).toBe("asserted");
+      expect(classify("Alice Example")).toBe("mutable");
+      expect(classify("alice@example.com")).toBe("mutable");
+      expect(classify("19:group@thread.tacv2")).toBeUndefined();
+    }
   });
 
   it("advertises legacy and group-management message-tool actions together", () => {
