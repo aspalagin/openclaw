@@ -96,8 +96,7 @@ function normalizeStaticMSTeamsAllowEntry(raw: string): string | undefined {
   if (trimmed === "*" || /^accessGroup:/i.test(trimmed)) {
     return trimmed;
   }
-  const id = normalizeMSTeamsUserInput(trimmed);
-  return isStableMSTeamsUserId(id) ? id : undefined;
+  return isStableMSTeamsUserId(trimmed) ? normalizeMSTeamsUserInput(trimmed) : undefined;
 }
 
 export function projectStableMSTeamsUserAllowlist(entries?: string[]): string[] | undefined {

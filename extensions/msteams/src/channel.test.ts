@@ -315,13 +315,12 @@ describe("msteamsPlugin", () => {
         throw new Error("msteams security.collectWarnings unavailable");
       }
 
-      await expect(
-        collectWarnings({
-          cfg,
-          accountId: "default",
-          account: plugin.config.resolveAccount(cfg, "default"),
-        }),
-      ).resolves.toEqual([
+      const warnings = await collectWarnings({
+        cfg,
+        accountId: "default",
+        account: plugin.config.resolveAccount(cfg, "default"),
+      });
+      expect(warnings).toEqual([
         expect.objectContaining({
           checkId: "channels.msteams.groups.open",
           severity: "critical",
