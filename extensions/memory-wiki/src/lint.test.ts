@@ -5,7 +5,7 @@ import { root as createFsSafeRoot } from "openclaw/plugin-sdk/file-access-runtim
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { walkMemoryWikiDirectory } from "./bounded-walk.js";
-import { lintMemoryWikiVault } from "./lint.js";
+import { lintMemoryWikiVault, MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS } from "./lint.js";
 import {
   renderWikiMarkdown,
   WIKI_RAW_SOURCE_MARKER,
@@ -604,6 +604,55 @@ describe("lintMemoryWikiVault", () => {
 
     await expect(lintMemoryWikiVault(config, { signal: abortController.signal })).rejects.toThrow();
     expect(openCalls).toBe(1);
+    await expect(fs.stat(path.join(rootDir, "reports", "lint.md"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("fails clearly when unique fallback path checks exhaust their budget", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-lint-vault-wide-budget-",
+      config: {
+        vault: { renderMode: "obsidian" },
+      },
+    });
+    await fs.mkdir(path.join(rootDir, "sources"), { recursive: true });
+    const links = Array.from(
+      { length: MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS + 1 },
+      (_, index) => `[[archive/missing-${index}]]`,
+    );
+    await fs.writeFile(
+      path.join(rootDir, "sources", "references.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.references",
+          title: "References",
+        },
+        body: ["# References", "", ...links].join("\n"),
+      }),
+      "utf8",
+    );
+
+    const rootMock = vi.mocked(createFsSafeRoot);
+    const createRoot = rootMock.getMockImplementation();
+    if (!createRoot) {
+      throw new Error("file-access root mock has no implementation");
+    }
+    let openCalls = 0;
+    rootMock.mockImplementationOnce(async (requestedRoot, defaults) => {
+      const safeRoot = await createRoot(requestedRoot, defaults);
+      vi.spyOn(safeRoot, "open").mockImplementation(async () => {
+        openCalls += 1;
+        throw Object.assign(new Error("missing"), { code: "not-found" });
+      });
+      return safeRoot;
+    });
+
+    await expect(lintMemoryWikiVault(config)).rejects.toThrow(
+      `Memory Wiki lint fallback path check budget exceeded (${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique targets)`,
+    );
+    expect(openCalls).toBe(MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS);
     await expect(fs.stat(path.join(rootDir, "reports", "lint.md"))).rejects.toMatchObject({
       code: "ENOENT",
     });
