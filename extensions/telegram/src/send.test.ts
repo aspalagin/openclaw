@@ -1507,6 +1507,39 @@ describe("sendMessageTelegram", () => {
     expect(richMessage?.media).toBeUndefined();
   });
 
+  it.each(["ogg", "opus", "oga"])(
+    "uploads a local .%s file as a typed voice-note block",
+    async (extension) => {
+      const fileName = `voice.${extension}`;
+      const fileData = Buffer.from(`local ${extension}`);
+      botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+      loadWebMedia.mockResolvedValueOnce({
+        buffer: fileData,
+        contentType: "audio/ogg",
+        fileName,
+      });
+
+      await sendMessageTelegram("123", `<audio src="/workspace/${fileName}"></audio>`, {
+        cfg: { channels: { telegram: { richMessages: true } } },
+        token: "tok",
+        mediaLocalRoots: ["/workspace"],
+      });
+
+      const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+      expect(richMessage?.blocks).toMatchObject([
+        {
+          type: "voice_note",
+          voice_note: {
+            type: "voice_note",
+            media: { fileData, filename: fileName },
+          },
+        },
+      ]);
+      expect(richMessage?.media).toBeUndefined();
+      expect(JSON.stringify(richMessage)).not.toContain("tg://voice_note");
+    },
+  );
+
   it("rejects a rich local image outside the allowed media directories", async () => {
     loadWebMedia.mockRejectedValueOnce(
       new Error("Local media path is not under an allowed directory: /private/chart.png"),
@@ -1608,6 +1641,27 @@ describe("sendMessageTelegram", () => {
     expect((photoParams as { reply_markup?: unknown } | undefined)?.reply_markup).toBeUndefined();
     expect(result).toMatchObject({ messageId: "48", chatId: "123" });
     expect(result.receipt?.platformMessageIds).toEqual(["47", "48"]);
+  });
+
+  it("preserves a rejected local voice note on the legacy resend", async () => {
+    botRawApi.sendRichMessage.mockRejectedValueOnce(createRichEntityInvalidError("MEDIA"));
+    botApi.sendMessage.mockResolvedValueOnce({ message_id: 47, chat: { id: "123" } });
+    botApi.sendVoice.mockResolvedValueOnce({ message_id: 48, chat: { id: "123" } });
+    loadWebMedia.mockResolvedValue({
+      buffer: Buffer.from("local voice"),
+      contentType: "audio/ogg",
+      fileName: "voice.ogg",
+    });
+
+    await sendMessageTelegram("123", '<audio src="/workspace/voice.ogg"></audio>', {
+      cfg: { channels: { telegram: { richMessages: true } } },
+      token: "tok",
+      mediaLocalRoots: ["/workspace"],
+    });
+
+    expect(botApi.sendMessage).toHaveBeenCalledWith("123", "voice.ogg");
+    expect(botApi.sendVoice).toHaveBeenCalledTimes(1);
+    expect(botApi.sendAudio).not.toHaveBeenCalled();
   });
 
   it("reports the plain fallback as partial delivery when the local resend fails", async () => {

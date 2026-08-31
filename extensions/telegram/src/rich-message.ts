@@ -23,10 +23,17 @@ export type TelegramInputRichMessage = Omit<InputRichMessage, "blocks"> & {
 export type TelegramInputRichMessageMedia = {
   id: string;
   media: {
-    type: "photo" | "video" | "audio";
+    type: "photo" | "video" | "audio" | "voice_note";
     media: InputFile;
   };
 };
+
+export function telegramRichMediaReference(entry: TelegramInputRichMessageMedia): string {
+  // The Bot API has no tg://voice_note link form. Voice notes use an audio
+  // placeholder until the typed block receives its InputMediaVoiceNote upload.
+  const referenceType = entry.media.type === "voice_note" ? "audio" : entry.media.type;
+  return `tg://${referenceType}?id=${entry.id}`;
+}
 
 // The Bot API resolves tg://<type>?id= links against `media` only for the
 // html/markdown source fields; typed blocks must carry the upload itself
@@ -34,14 +41,12 @@ export type TelegramInputRichMessageMedia = {
 // ("wrong remote file identifier specified", live-verified).
 export function inlineTelegramRichMessageMediaUploads(
   richMessage: TelegramInputRichMessage,
-): Omit<TelegramInputRichMessage, "media"> {
+): InputRichMessage {
   const { media, ...rest } = richMessage;
   if (!media?.length) {
     return rest;
   }
-  const uploads = new Map(
-    media.map((entry) => [`tg://${entry.media.type}?id=${entry.id}`, entry.media.media]),
-  );
+  const uploads = new Map(media.map((entry) => [telegramRichMediaReference(entry), entry.media]));
   const inline = (value: unknown): unknown => {
     if (Array.isArray(value)) {
       return value.map(inline);
@@ -49,17 +54,31 @@ export function inlineTelegramRichMessageMediaUploads(
     if (!value || typeof value !== "object") {
       return value;
     }
+    const record = value as Record<string, unknown>;
+    const audio = record.type === "audio" ? record.audio : undefined;
+    if (audio && typeof audio === "object") {
+      const mediaSource = (audio as { media?: unknown }).media;
+      const upload = typeof mediaSource === "string" ? uploads.get(mediaSource) : undefined;
+      if (upload?.type === "voice_note") {
+        const { audio: _audio, ...block } = record;
+        return {
+          ...Object.fromEntries(Object.entries(block).map(([key, item]) => [key, inline(item)])),
+          type: "voice_note",
+          voice_note: upload,
+        };
+      }
+    }
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         key,
         key === "media" && typeof item === "string" && uploads.has(item)
-          ? uploads.get(item)
+          ? uploads.get(item)?.media
           : inline(item),
       ]),
     );
   };
   // SAFETY: inline() preserves the block tree shape and only swaps registered tg:// media URLs for their InputFile uploads.
-  return { ...rest, blocks: inline(rest.blocks) as InputRichBlock[] };
+  return { ...rest, blocks: inline(rest.blocks) as InputRichMessage["blocks"] };
 }
 
 type TelegramRichMessageOptions = {

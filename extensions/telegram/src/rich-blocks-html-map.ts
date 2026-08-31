@@ -2,6 +2,7 @@
 // and island discovery, on top of the fragment parser in rich-blocks-html.ts.
 import { tokenizeHtmlTags } from "openclaw/plugin-sdk/text-chunking";
 import {
+  isVoiceNoteMedia,
   richTextToPlainString,
   type InputRichBlock,
   type InputRichBlockListItem,
@@ -87,7 +88,7 @@ function mediaBlockFromElement(
     // OGG/Opus is Telegram's voice-note family; the music `audio` type rejects
     // it (live-verified RICH_MESSAGE_AUDIO_INVALID), and a Vorbis ogg fails
     // under both types, so voice_note strictly dominates for these extensions.
-    if (/\.(?:ogg|opus|oga)(?:[?#]|$)/i.test(src)) {
+    if (isVoiceNoteMedia(src)) {
       return {
         type: "voice_note",
         voice_note: { type: "voice_note", media: src },

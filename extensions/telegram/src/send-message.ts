@@ -512,7 +512,11 @@ async function sendMessageTelegramWithContext(
         await sendMessageTelegramWithContext(
           to,
           "",
-          { ...mediaOpts, mediaUrl: media.source },
+          {
+            ...mediaOpts,
+            mediaUrl: media.source,
+            ...(media.media.type === "voice_note" ? { asVoice: true } : {}),
+          },
           apiContext,
         ),
       );

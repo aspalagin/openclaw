@@ -2,7 +2,8 @@ import { InputFile } from "grammy";
 import { extensionForMime } from "openclaw/plugin-sdk/media-mime";
 import { isGifMedia, kindFromMime } from "openclaw/plugin-sdk/media-runtime";
 import type { OutboundMediaAccess } from "openclaw/plugin-sdk/media-runtime";
-import type { TelegramInputRichMessageMedia } from "./rich-message.js";
+import { isVoiceNoteMedia } from "./rich-block-model.js";
+import { telegramRichMediaReference, type TelegramInputRichMessageMedia } from "./rich-message.js";
 import { buildOutboundMediaLoadOptions, getImageMetadata, loadWebMedia } from "./send.runtime.js";
 
 const MAX_RICH_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -13,7 +14,8 @@ const LOCAL_MEDIA_TAG_RE = /<(img|video|audio)\b([^>]*?)\bsrc=(["'])([^"']+)\3([
 const LOCAL_MARKDOWN_IMAGE_RE =
   /!\[([^\]\n]*)\]\(((?:file:\/\/)?\/(?!\/)[^\s)"]+)(?:\s+"([^"\n]*)")?\)/gu;
 
-type RichMediaType = "photo" | "video" | "audio";
+type RichMediaType = "photo" | "video" | "audio" | "voice_note";
+type RichMediaElementType = Exclude<RichMediaType, "voice_note">;
 
 export type TelegramRichLocalMedia = TelegramInputRichMessageMedia & {
   /** Original local source, resent as legacy media when Telegram rejects the rich upload. */
@@ -31,8 +33,12 @@ export function isTelegramRichLocalMediaSource(source: string): boolean {
   return LOCAL_MEDIA_SOURCE_RE.test(source.trim());
 }
 
-function richMediaTypeForTag(tag: string): RichMediaType {
+function richMediaTypeForTag(tag: string): RichMediaElementType {
   return tag === "img" ? "photo" : tag === "video" ? "video" : "audio";
+}
+
+function richMediaElementType(type: RichMediaType): RichMediaElementType {
+  return type === "voice_note" ? "audio" : type;
 }
 
 function richLocalMediaFilename(params: {
@@ -80,8 +86,9 @@ function buildFigure(
     value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
   const alt = params?.alt ? ` alt="${escape(params.alt)}"` : "";
   const caption = params?.caption ? `<figcaption>${escape(params.caption)}</figcaption>` : "";
-  const tag = media.media.type === "photo" ? "img" : media.media.type;
-  return `<figure><${tag} src="tg://${media.media.type}?id=${media.id}"${alt}/>${caption}</figure>`;
+  const elementType = richMediaElementType(media.media.type);
+  const tag = elementType === "photo" ? "img" : elementType;
+  return `<figure><${tag} src="${telegramRichMediaReference(media)}"${alt}/>${caption}</figure>`;
 }
 
 export async function resolveTelegramRichLocalMedia(params: {
@@ -123,7 +130,9 @@ export async function resolveTelegramRichLocalMedia(params: {
           : kind === "video" && !isGif
             ? "video"
             : kind === "audio"
-              ? "audio"
+              ? isVoiceNoteMedia(loaded.fileName ?? key)
+                ? "voice_note"
+                : "audio"
               : undefined;
       if (!type) {
         return undefined;
@@ -162,10 +171,10 @@ export async function resolveTelegramRichLocalMedia(params: {
     if (!resolved) {
       throw unsupportedRichLocalMediaError(source);
     }
-    if (resolved.media.type !== richMediaTypeForTag(tag)) {
+    if (richMediaElementType(resolved.media.type) !== richMediaTypeForTag(tag)) {
       throw new Error(`Telegram rich media element does not match local file type: ${source}`);
     }
-    result += `<${tag}${before}src=${quote}tg://${resolved.media.type}?id=${resolved.id}${quote}${after}>`;
+    result += `<${tag}${before}src=${quote}${telegramRichMediaReference(resolved)}${quote}${after}>`;
   }
   result += params.text.slice(cursor);
 

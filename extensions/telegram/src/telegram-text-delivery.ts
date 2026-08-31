@@ -8,13 +8,17 @@ import {
   telegramHtmlToPlainTextFallback,
   wrapFileReferencesInHtml,
 } from "./format.js";
-import type { TelegramRichBlocksDegradationReason } from "./rich-block-model.js";
+import {
+  inputRichBlockMediaSources,
+  type TelegramRichBlocksDegradationReason,
+} from "./rich-block-model.js";
 import { splitTelegramRichBlocks } from "./rich-block-split.js";
 import type { TelegramRichLocalMedia } from "./rich-local-media.js";
 import {
   buildTelegramRichBlocksPlan,
   buildTelegramRichMarkdownPlan,
   splitTelegramRichMessageTextChunks,
+  telegramRichMediaReference,
   type TelegramInputRichMessage,
 } from "./rich-message.js";
 import {
@@ -65,10 +69,6 @@ function fallbackPage(text: string): TelegramTextDeliveryPage {
   };
 }
 
-function richLocalMediaReference(entry: TelegramRichLocalMedia): string {
-  return `tg://${entry.media.type}?id=${entry.id}`;
-}
-
 function attachTelegramRichLocalMedia(
   page: { plainText: string; richMessage: TelegramInputRichMessage },
   media: readonly TelegramRichLocalMedia[] | undefined,
@@ -77,17 +77,15 @@ function attachTelegramRichLocalMedia(
   richMessage: TelegramInputRichMessage;
   richLocalMedia?: readonly TelegramRichLocalMedia[];
 } {
-  const serializedBlocks = JSON.stringify(page.richMessage.blocks);
-  const matched = media?.filter((entry) =>
-    serializedBlocks.includes(richLocalMediaReference(entry)),
-  );
+  const mediaSources = inputRichBlockMediaSources(page.richMessage.blocks);
+  const matched = media?.filter((entry) => mediaSources.has(telegramRichMediaReference(entry)));
   if (!matched?.length) {
     return { plainText: page.plainText, richMessage: page.richMessage };
   }
   // The plain fallback names the file: a tg:// id only resolves inside the
   // rich upload, and the original file follows through the legacy media path.
   const plainText = matched.reduce(
-    (text, entry) => text.replaceAll(richLocalMediaReference(entry), entry.fileName),
+    (text, entry) => text.replaceAll(telegramRichMediaReference(entry), entry.fileName),
     page.plainText,
   );
   return {
