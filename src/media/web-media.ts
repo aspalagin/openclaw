@@ -318,13 +318,26 @@ function hasHtmlDocumentShape(text: string): boolean {
 // root (after an optional BOM, XML declaration, comments, or doctype) so host-read
 // accepts demonstrable FictionBook content rather than every text-valid XML file.
 const FICTIONBOOK_ROOT_RE =
-  /^\uFEFF?(?:\s*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>))*\s*<(?:[A-Za-z_][\w.-]*:)?FictionBook(?=[\s/>])([^>]*)>/u;
-const FICTIONBOOK_NAMESPACE_RE =
-  /(?:^|\s)xmlns(?::[A-Za-z_][\w.-]*)?\s*=\s*(["'])http:\/\/www\.gribuser\.ru\/xml\/fictionbook\/[^"']*\1/u;
+  /^\uFEFF?(?:\s*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>))*\s*<(?:(?<prefix>[A-Za-z_][\w.-]*):)?FictionBook(?=[\s/>])(?<attributes>[^>]*)>/u;
+const FICTIONBOOK_NAMESPACE = "http://www.gribuser.ru/xml/fictionbook/2.0";
+const XML_NAMESPACE_ATTRIBUTE_RE =
+  /(?:^|\s)xmlns(?::(?<prefix>[A-Za-z_][\w.-]*))?\s*=\s*(["'])(?<namespace>[^"']*)\2/gu;
 
 function hasFictionBookDocumentShape(text: string): boolean {
   const root = FICTIONBOOK_ROOT_RE.exec(text.slice(0, 8192));
-  return root !== null && FICTIONBOOK_NAMESPACE_RE.test(root[1] ?? "");
+  if (!root) {
+    return false;
+  }
+  const rootPrefix = root.groups?.prefix;
+  for (const declaration of (root.groups?.attributes ?? "").matchAll(XML_NAMESPACE_ATTRIBUTE_RE)) {
+    if (
+      declaration.groups?.prefix === rootPrefix &&
+      declaration.groups?.namespace === FICTIONBOOK_NAMESPACE
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 type HostReadHtmlTrust =

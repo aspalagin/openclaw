@@ -1327,6 +1327,16 @@ describe("loadWebMedia", () => {
       body: '<?xml version="1.0" encoding="utf-8"?><FictionBook><description/></FictionBook>',
     },
     {
+      name: "an unprefixed FictionBook root with the namespace on another prefix",
+      fileName: "mismatched-default.xml",
+      body: '<FictionBook xmlns="urn:not-fictionbook" xmlns:fb="http://www.gribuser.ru/xml/fictionbook/2.0"/>',
+    },
+    {
+      name: "a prefixed FictionBook root with the namespace on another prefix",
+      fileName: "mismatched-prefix.fb2",
+      body: '<x:FictionBook xmlns:x="urn:not-fictionbook" xmlns:fb="http://www.gribuser.ru/xml/fictionbook/2.0"/>',
+    },
+    {
       name: "a FictionBook element nested below a foreign root",
       fileName: "wrapped.xml",
       body: '<?xml version="1.0"?><settings><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"/></settings>',
