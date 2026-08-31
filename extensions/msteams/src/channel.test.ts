@@ -335,12 +335,13 @@ describe("msteamsPlugin", () => {
 
   it("classifies authored Teams identities for security audits", () => {
     const stableId = "40a1a0ed-4ff2-4164-a219-55518990c197";
+    const stableNonUuidId = "0123456789abcdef";
     const cfg = {
       channels: {
         msteams: {
           ...createConfiguredMSTeamsCfg().channels?.msteams,
           dmPolicy: "allowlist",
-          allowFrom: [stableId, "Alice Example", "alice@example.com"],
+          allowFrom: [stableId, stableNonUuidId, "Alice Example", "alice@example.com"],
           dangerouslyAllowNameMatching: true,
         },
       },
@@ -357,6 +358,8 @@ describe("msteamsPlugin", () => {
       expect(account.config).toEqual({ dangerouslyAllowNameMatching: true });
       expect(classify(stableId)).toBe("asserted");
       expect(classify(`teams:user:${stableId}`)).toBe("asserted");
+      expect(classify(stableNonUuidId)).toBe("asserted");
+      expect(classify(`msteams:user:${stableNonUuidId}`)).toBe("asserted");
       expect(classify("Alice Example")).toBe("mutable");
       expect(classify("alice@example.com")).toBe("mutable");
       expect(classify("19:group@thread.tacv2")).toBeUndefined();

@@ -13,12 +13,17 @@ import {
   type GraphUser,
 } from "./graph.js";
 import {
+  isStableMSTeamsUserId,
   looksLikeMSTeamsConversationId,
   normalizeMSTeamsConversationId,
   normalizeMSTeamsUserInput,
 } from "./ingress-identity.js";
 
-export { looksLikeMSTeamsConversationId, normalizeMSTeamsUserInput } from "./ingress-identity.js";
+export {
+  isStableMSTeamsUserId,
+  looksLikeMSTeamsConversationId,
+  normalizeMSTeamsUserInput,
+} from "./ingress-identity.js";
 
 type MSTeamsChannelResolution = {
   input: string;
@@ -81,10 +86,6 @@ function findExactUsers(items: GraphUser[], query: string): GraphUser[] {
       ),
     ),
   );
-}
-
-function isStableMSTeamsUserId(raw: string): boolean {
-  return /^[0-9a-fA-F-]{16,}$/.test(normalizeMSTeamsUserInput(raw));
 }
 
 function normalizeStaticMSTeamsAllowEntry(raw: string): string | undefined {
@@ -175,10 +176,10 @@ export function looksLikeMSTeamsTargetId(raw: string): boolean {
     return true;
   }
   if (/^user:/i.test(trimmed)) {
-    // Only treat as an id when the value after `user:` looks like a UUID;
+    // Only treat as an id when the value after `user:` matches the runtime stable-id shape;
     // display names must fall through to directory lookup.
     const id = trimmed.slice("user:".length).trim();
-    return /^[0-9a-fA-F-]{16,}$/.test(id);
+    return isStableMSTeamsUserId(id);
   }
   return /^29:[A-Za-z0-9_-]+$/i.test(trimmed);
 }

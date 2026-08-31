@@ -63,6 +63,7 @@ import {
 import {
   normalizeMSTeamsMessagingTarget,
   normalizeMSTeamsUserInput,
+  isStableMSTeamsUserId,
   looksLikeMSTeamsTargetId,
   parseMSTeamsConversationId,
   parseMSTeamsTeamChannelInput,
@@ -493,7 +494,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 return;
               }
               const cleaned = stripPrefix(trimmed);
-              if (/^[0-9a-fA-F-]{16,}$/.test(cleaned) || cleaned.includes("@")) {
+              if (isStableMSTeamsUserId(cleaned) || cleaned.includes("@")) {
                 entry.resolved = true;
                 entry.id = cleaned;
                 return;
