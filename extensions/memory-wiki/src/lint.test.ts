@@ -467,9 +467,15 @@ describe("lintMemoryWikiVault", () => {
       },
     });
     await Promise.all(
-      ["sources", "syntheses", "people", ".git", "node_modules/example"].map((dir) =>
-        fs.mkdir(path.join(rootDir, dir), { recursive: true }),
-      ),
+      [
+        "sources",
+        "syntheses",
+        "people",
+        ".GiT",
+        "Node_Modules/example",
+        ".OpenClaw-Wiki",
+        "_Attachments",
+      ].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
     );
 
     await fs.writeFile(
@@ -485,8 +491,10 @@ describe("lintMemoryWikiVault", () => {
           "",
           "[[syntheses/summary]]",
           "[[people/ada-lovelace]]",
-          "[[.git/private]]",
-          "[[node_modules/example/private]]",
+          "[[.GiT/private]]",
+          "[[Node_Modules/example/private]]",
+          "[[.OpenClaw-Wiki/private]]",
+          "[[_Attachments/private]]",
           "[[missing-page]]",
         ].join("\n"),
       }),
@@ -507,10 +515,20 @@ describe("lintMemoryWikiVault", () => {
     );
     await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
     await Promise.all([
-      fs.writeFile(path.join(rootDir, ".git", "private.md"), "# Git metadata\n", "utf8"),
+      fs.writeFile(path.join(rootDir, ".GiT", "private.md"), "# Git metadata variant\n", "utf8"),
       fs.writeFile(
-        path.join(rootDir, "node_modules", "example", "private.md"),
-        "# Dependency metadata\n",
+        path.join(rootDir, "Node_Modules", "example", "private.md"),
+        "# Dependency metadata variant\n",
+        "utf8",
+      ),
+      fs.writeFile(
+        path.join(rootDir, ".OpenClaw-Wiki", "private.md"),
+        "# Internal state\n",
+        "utf8",
+      ),
+      fs.writeFile(
+        path.join(rootDir, "_Attachments", "private.md"),
+        "# Private attachment\n",
         "utf8",
       ),
     ]);
@@ -523,8 +541,10 @@ describe("lintMemoryWikiVault", () => {
       .map((issue) => issue.message);
 
     expect(brokenTargets).toEqual([
-      "Broken wikilink target `.git/private`.",
-      "Broken wikilink target `node_modules/example/private`.",
+      "Broken wikilink target `.GiT/private`.",
+      "Broken wikilink target `Node_Modules/example/private`.",
+      "Broken wikilink target `.OpenClaw-Wiki/private`.",
+      "Broken wikilink target `_Attachments/private`.",
       "Broken wikilink target `missing-page`.",
     ]);
     expect(lintWalkCalls.some(([, relativePath]) => relativePath === "")).toBe(false);

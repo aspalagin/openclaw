@@ -15,10 +15,16 @@ type MemoryWikiWalkLimits = {
   onDirectoryError?: RootWalkOptions["onDirectoryError"];
 };
 
+export function foldMemoryWikiDirectoryName(segment: string): string {
+  return segment.replace(/[A-Z]/gu, (character) => character.toLowerCase());
+}
+
 export function isMemoryWikiRepositoryOrDependencyPath(relativePath: string): boolean {
   return relativePath
     .split(/[\\/]/)
-    .some((segment) => MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES.has(segment));
+    .some((segment) =>
+      MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES.has(foldMemoryWikiDirectoryName(segment)),
+    );
 }
 
 export function isMemoryWikiRepositoryOrDependencyDirectory(entry: RootWalkEntry): boolean {

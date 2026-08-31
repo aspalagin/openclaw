@@ -8,7 +8,10 @@ import {
 } from "openclaw/plugin-sdk/memory-host-markdown";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { isMemoryWikiRepositoryOrDependencyPath } from "./bounded-walk.js";
+import {
+  foldMemoryWikiDirectoryName,
+  isMemoryWikiRepositoryOrDependencyPath,
+} from "./bounded-walk.js";
 import {
   assessPageFreshness,
   buildClaimContradictionClusters,
@@ -217,7 +220,9 @@ async function hasVaultMarkdownPathTarget(
     /^[a-zA-Z]:($|\/)/.test(normalized) ||
     segments.includes("..") ||
     isMemoryWikiRepositoryOrDependencyPath(normalized) ||
-    segments.some((segment) => MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES.has(segment))
+    segments.some((segment) =>
+      MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES.has(foldMemoryWikiDirectoryName(segment)),
+    )
   ) {
     return false;
   }

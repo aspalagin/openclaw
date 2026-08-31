@@ -28,14 +28,12 @@ describe("walkMemoryWikiDirectory", () => {
     await expect(walkMemoryWikiDirectory(root, "missing")).resolves.toEqual([]);
   });
 
-  it("prunes ignored subtrees before their descendants consume the budget", async () => {
+  it("prunes case-insensitive ignored subtrees before descendants consume the budget", async () => {
     const root = await tempDirs.createTempDir("memory-wiki-walk-");
-    await Promise.all([
-      fs.mkdir(path.join(root, ".git")),
-      fs.mkdir(path.join(root, "node_modules")),
-    ]);
+    const ignoredDirectories = [".GIT", "Node_Modules"];
+    await Promise.all(ignoredDirectories.map((directory) => fs.mkdir(path.join(root, directory))));
     await Promise.all(
-      [".git", "node_modules"].flatMap((directory) =>
+      ignoredDirectories.flatMap((directory) =>
         Array.from({ length: 10 }, (_, index) =>
           fs.writeFile(path.join(root, directory, `ignored-${index}.md`), "ignored"),
         ),
@@ -45,7 +43,7 @@ describe("walkMemoryWikiDirectory", () => {
 
     await expect(
       walkMemoryWikiDirectory(root, "", {
-        maxEntries: 3,
+        maxEntries: ignoredDirectories.length + 1,
         entryFilter: (entry) =>
           isMemoryWikiRepositoryOrDependencyDirectory(entry) ? "skip-subtree" : "include",
       }),
