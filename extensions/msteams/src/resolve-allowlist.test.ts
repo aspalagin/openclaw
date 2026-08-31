@@ -136,6 +136,8 @@ describe("projectStableMSTeamsUserAllowlist", () => {
       projectStableMSTeamsUserAllowlist([
         "19:group@thread.tacv2",
         "19:legacy@thread.skype",
+        "conversation:0123456789abcdef",
+        "msteams:conversation:fedcba9876543210",
         "user:40a1a0ed-4ff2-4164-a219-55518990c197",
       ]),
     ).toEqual(["40a1a0ed-4ff2-4164-a219-55518990c197"]);

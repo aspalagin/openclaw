@@ -14,8 +14,8 @@ import {
   type WizardPrompter,
 } from "openclaw/plugin-sdk/setup";
 import { formatUnknownError } from "./errors.js";
+import { isStableMSTeamsUserId } from "./ingress-identity.js";
 import {
-  isStableMSTeamsUserId,
   parseMSTeamsTeamEntry,
   resolveMSTeamsChannelAllowlist,
   resolveMSTeamsUserAllowlist,

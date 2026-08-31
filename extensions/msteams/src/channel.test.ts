@@ -363,6 +363,8 @@ describe("msteamsPlugin", () => {
       expect(classify("Alice Example")).toBe("mutable");
       expect(classify("alice@example.com")).toBe("mutable");
       expect(classify("19:group@thread.tacv2")).toBeUndefined();
+      expect(classify(`conversation:${stableNonUuidId}`)).toBeUndefined();
+      expect(classify(`msteams:conversation:${stableNonUuidId}`)).toBeUndefined();
     }
   });
 
