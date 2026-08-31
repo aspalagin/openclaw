@@ -203,13 +203,37 @@ const NON_TARGET_PATH_ERROR_CODES = new Set([
   "not-file",
   "not-found",
   "outside-workspace",
-  "path-mismatch",
   "symlink",
 ]);
+
+async function hasExactVaultPathSpelling(
+  vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
+  requestedPath: string,
+  directoryEntries: Map<string, Promise<Set<string>>>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let parentPath = "";
+  for (const segment of requestedPath.split("/")) {
+    signal?.throwIfAborted();
+    let pendingEntries = directoryEntries.get(parentPath);
+    if (!pendingEntries) {
+      pendingEntries = vaultRoot.list(parentPath).then((entries) => new Set(entries));
+      directoryEntries.set(parentPath, pendingEntries);
+    }
+    const entries = await pendingEntries;
+    signal?.throwIfAborted();
+    if (!entries.has(segment)) {
+      return false;
+    }
+    parentPath = parentPath ? `${parentPath}/${segment}` : segment;
+  }
+  return true;
+}
 
 async function hasVaultMarkdownPathTarget(
   vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
   rawTarget: string,
+  directoryEntries: Map<string, Promise<Set<string>>>,
   signal?: AbortSignal,
 ): Promise<boolean> {
   signal?.throwIfAborted();
@@ -229,14 +253,27 @@ async function hasVaultMarkdownPathTarget(
   ) {
     return false;
   }
+  const requestedPath = `${normalized}.md`;
   try {
-    const opened = await vaultRoot.open(`${normalized}.md`, {
+    if (!(await hasExactVaultPathSpelling(vaultRoot, requestedPath, directoryEntries, signal))) {
+      return false;
+    }
+    const opened = await vaultRoot.open(requestedPath, {
       hardlinks: "allow",
       symlinks: "reject",
     });
-    await opened.handle.close();
+    let exactSpelling = false;
+    try {
+      const openedRelativePath = path
+        .relative(vaultRoot.rootReal, opened.realPath)
+        .split(path.sep)
+        .join("/");
+      exactSpelling = openedRelativePath === requestedPath;
+    } finally {
+      await opened.handle.close();
+    }
     signal?.throwIfAborted();
-    return true;
+    return exactSpelling;
   } catch (error) {
     signal?.throwIfAborted();
     const code =
@@ -267,6 +304,7 @@ async function collectBrokenLinkIssues(
   });
   signal?.throwIfAborted();
   const directPathTargets = new Map<string, Promise<boolean>>();
+  const directoryEntries = new Map<string, Promise<Set<string>>>();
 
   const issues: MemoryWikiLintIssue[] = [];
   for (const page of pages) {
@@ -283,7 +321,7 @@ async function collectBrokenLinkIssues(
               `Memory Wiki lint fallback path check budget exceeded (${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique targets)`,
             );
           }
-          pending = hasVaultMarkdownPathTarget(vaultRoot, linkTarget, signal);
+          pending = hasVaultMarkdownPathTarget(vaultRoot, linkTarget, directoryEntries, signal);
           directPathTargets.set(cacheKey, pending);
         }
         valid = await pending;
