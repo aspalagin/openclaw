@@ -23,13 +23,16 @@ function localAudio(index: number): TelegramRichLocalMedia {
 describe("Telegram rich local media page delivery", () => {
   it("binds media1 and media10 by exact reference through a page fallback", async () => {
     const media = Array.from({ length: 10 }, (_, index) => localAudio(index + 1));
-    const blocks: InputRichBlock[] = media.map((entry) => ({
-      type: "audio",
-      audio: { type: "audio", media: `tg://audio?id=${entry.id}` },
-    }));
+    const blocks: InputRichBlock[] = media.flatMap((entry) => [
+      { type: "paragraph", text: "x" },
+      {
+        type: "audio",
+        audio: { type: "audio", media: `tg://audio?id=${entry.id}` },
+      },
+    ]);
     const pages = planTelegramTextDeliveryPages({
       text: "",
-      maxChars: 20,
+      maxChars: 1,
       richMessages: true,
       richMessage: { blocks },
       richLocalMedia: media,
@@ -37,14 +40,17 @@ describe("Telegram rich local media page delivery", () => {
 
     expect(pages).toHaveLength(10);
     const lastPage = pages.at(-1);
-    expect(lastPage?.plainText).toBe("track10.mp3");
-    expect(lastPage?.richLocalMedia?.map((entry) => entry.id)).toEqual(["media10"]);
+    if (!lastPage) {
+      throw new Error("expected the final rich-message page");
+    }
+    expect(lastPage.plainText).toBe("x\ntrack10.mp3");
+    expect(lastPage.richLocalMedia?.map((entry) => entry.id)).toEqual(["media10"]);
 
     const sendPlain = vi.fn(async (text: string) => text);
     const onPlainFallback = vi.fn();
     const delivered: string[] = [];
     for await (const part of sendTelegramTextPageParts({
-      page: lastPage!,
+      page: lastPage,
       context: "page send",
       warn: vi.fn(),
       onPlainFallback,
@@ -59,9 +65,9 @@ describe("Telegram rich local media page delivery", () => {
       delivered.push(part.result);
     }
 
-    expect(delivered).toEqual(["track10.mp3"]);
+    expect(delivered).toEqual(["x\ntrack10.mp3"]);
     expect(sendPlain).toHaveBeenCalledWith(
-      "track10.mp3",
+      "x\ntrack10.mp3",
       { index: 0, count: 1 },
       "page send-plain",
     );

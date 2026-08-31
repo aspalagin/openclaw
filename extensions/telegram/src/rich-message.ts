@@ -15,7 +15,7 @@ const TELEGRAM_RICH_BLOCK_LIMIT = 500;
 // The rich wire path is blocks-only: caller-authored HTML (formatting.parseMode
 // "HTML") stays on the legacy parse_mode HTML funnel even for rich accounts, so
 // literal-newline and chunking semantics match what HTML callers authored against.
-export type TelegramInputRichMessage = Omit<InputRichMessage, "blocks"> & {
+export type TelegramInputRichMessage = Omit<InputRichMessage, "blocks" | "media"> & {
   blocks: InputRichBlock[];
   media?: TelegramInputRichMessageMedia[];
 };
@@ -54,10 +54,10 @@ export function inlineTelegramRichMessageMediaUploads(
     if (!value || typeof value !== "object") {
       return value;
     }
-    const record = value as Record<string, unknown>;
+    const record = Object.fromEntries(Object.entries(value));
     const audio = record.type === "audio" ? record.audio : undefined;
     if (audio && typeof audio === "object") {
-      const mediaSource = (audio as { media?: unknown }).media;
+      const mediaSource = Object.fromEntries(Object.entries(audio)).media;
       const upload = typeof mediaSource === "string" ? uploads.get(mediaSource) : undefined;
       if (upload?.type === "voice_note") {
         const { audio: _audio, ...block } = record;
