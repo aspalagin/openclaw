@@ -7,7 +7,7 @@ import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coe
 
 const MSTEAMS_SENDER_NAME_KIND = "plugin:msteams-sender-name" as const;
 const MSTEAMS_CONVERSATION_ID_KIND = "plugin:msteams-conversation-id" as const;
-const MSTEAMS_AAD_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MSTEAMS_STABLE_USER_ID = /^[0-9a-f-]{16,}$/i;
 const MSTEAMS_GROUP_CONVERSATION_ID = /^19:.+@thread\.(?:tacv2|skype|v2)$/i;
 
 function stripProviderPrefix(raw: string): string {
@@ -18,6 +18,11 @@ export function normalizeMSTeamsUserInput(raw: string): string {
   return stripProviderPrefix(raw)
     .replace(/^(user|conversation):/i, "")
     .trim();
+}
+
+/** Match the stable user-id shape accepted by runtime allowlist projection and targeting. */
+export function isStableMSTeamsUserId(raw: string): boolean {
+  return MSTEAMS_STABLE_USER_ID.test(normalizeMSTeamsUserInput(raw));
 }
 
 export function normalizeMSTeamsConversationId(raw: string): string {
@@ -117,5 +122,5 @@ export function classifyMSTeamsEntryAuthentication(
   ) {
     return undefined;
   }
-  return MSTEAMS_AAD_OBJECT_ID.test(normalized) ? "asserted" : "mutable";
+  return isStableMSTeamsUserId(normalized) ? "asserted" : "mutable";
 }
