@@ -32,7 +32,6 @@ import type {
   ChannelMessageActionName,
   ChannelOutboundAdapter,
   ChannelPlugin,
-  OpenClawConfig,
 } from "../runtime-api.js";
 import {
   buildProbeChannelStatusSummary,
