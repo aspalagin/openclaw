@@ -196,7 +196,7 @@ function hasValidWikiLinkTarget(index: WikiLinkTargetIndex, rawTarget: string): 
 }
 
 const MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES = new Set([".openclaw-wiki", "_attachments"]);
-export const MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS = 512;
+const MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS = 512;
 const NON_TARGET_PATH_ERROR_CODES = new Set([
   "device-path",
   "invalid-path",

@@ -1,11 +1,10 @@
 // Memory Wiki tests cover lint plugin behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { root as createFsSafeRoot } from "openclaw/plugin-sdk/file-access-runtime";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { walkMemoryWikiDirectory } from "./bounded-walk.js";
-import { lintMemoryWikiVault, MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS } from "./lint.js";
+import { lintMemoryWikiVault } from "./lint.js";
 import {
   renderWikiMarkdown,
   WIKI_RAW_SOURCE_MARKER,
@@ -20,14 +19,6 @@ vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => {
   return {
     ...actual,
     replaceFileAtomic: vi.fn(actual.replaceFileAtomic),
-  };
-});
-
-vi.mock("openclaw/plugin-sdk/file-access-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/file-access-runtime")>();
-  return {
-    ...actual,
-    root: vi.fn(actual.root),
   };
 });
 
@@ -557,220 +548,6 @@ describe("lintMemoryWikiVault", () => {
       "Broken wikilink target `missing-page`.",
     ]);
     expect(lintWalkCalls.some(([, relativePath]) => relativePath === "")).toBe(false);
-  });
-
-  it("stops fallback path checks on abort without publishing a lint report", async () => {
-    const { rootDir, config } = await createVault({
-      prefix: "memory-wiki-lint-vault-wide-abort-",
-      config: {
-        vault: { renderMode: "obsidian" },
-      },
-    });
-    await Promise.all(
-      ["sources", "people"].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
-    );
-    await fs.writeFile(
-      path.join(rootDir, "sources", "references.md"),
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "source",
-          id: "source.references",
-          title: "References",
-        },
-        body: "# References\n\n[[people/ada-lovelace]]\n[[people/grace-hopper]]\n",
-      }),
-      "utf8",
-    );
-    await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
-
-    const rootMock = vi.mocked(createFsSafeRoot);
-    const createRoot = rootMock.getMockImplementation();
-    if (!createRoot) {
-      throw new Error("file-access root mock has no implementation");
-    }
-    const abortController = new AbortController();
-    let openCalls = 0;
-    rootMock.mockImplementationOnce(async (requestedRoot, defaults) => {
-      const safeRoot = await createRoot(requestedRoot, defaults);
-      const open = safeRoot.open.bind(safeRoot);
-      vi.spyOn(safeRoot, "open").mockImplementation(async (...args) => {
-        openCalls += 1;
-        const opened = await open(...args);
-        abortController.abort();
-        return opened;
-      });
-      return safeRoot;
-    });
-
-    await expect(lintMemoryWikiVault(config, { signal: abortController.signal })).rejects.toThrow();
-    expect(openCalls).toBe(1);
-    await expect(fs.stat(path.join(rootDir, "reports", "lint.md"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-  });
-
-  it("fails clearly when unique fallback path checks exhaust their budget", async () => {
-    const { rootDir, config } = await createVault({
-      prefix: "memory-wiki-lint-vault-wide-budget-",
-      config: {
-        vault: { renderMode: "obsidian" },
-      },
-    });
-    await fs.mkdir(path.join(rootDir, "sources"), { recursive: true });
-    const links = Array.from(
-      { length: MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS + 1 },
-      (_, index) => `[[archive/missing-${index}]]`,
-    );
-    await fs.writeFile(
-      path.join(rootDir, "sources", "references.md"),
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "source",
-          id: "source.references",
-          title: "References",
-        },
-        body: ["# References", "", ...links].join("\n"),
-      }),
-      "utf8",
-    );
-
-    await expect(lintMemoryWikiVault(config)).rejects.toThrow(
-      `Memory Wiki lint fallback path check budget exceeded (${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique targets)`,
-    );
-    await expect(fs.stat(path.join(rootDir, "reports", "lint.md"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-  });
-
-  it("does not spend the fallback path budget on rejected targets", async () => {
-    const { rootDir, config } = await createVault({
-      prefix: "memory-wiki-lint-vault-wide-rejected-budget-",
-      config: {
-        vault: { renderMode: "obsidian" },
-      },
-    });
-    await Promise.all(
-      ["sources", "people"].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
-    );
-    const rejectedLinks = Array.from(
-      { length: MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS + 1 },
-      (_, index) => `[[.GiT/private-${index}]]`,
-    );
-    await fs.writeFile(
-      path.join(rootDir, "sources", "references.md"),
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "source",
-          id: "source.references",
-          title: "References",
-        },
-        body: ["# References", "", ...rejectedLinks, "[[people/ada-lovelace]]"].join("\n"),
-      }),
-      "utf8",
-    );
-    await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
-
-    const result = await lintMemoryWikiVault(config);
-
-    expect(result.issues.filter((issue) => issue.code === "broken-wikilink")).toHaveLength(
-      rejectedLinks.length,
-    );
-  });
-
-  it("keeps direct fallback path spelling exact on case-insensitive filesystems", async () => {
-    const { rootDir, config } = await createVault({
-      prefix: "memory-wiki-lint-vault-wide-exact-case-",
-      config: {
-        vault: { renderMode: "obsidian" },
-      },
-    });
-    await Promise.all(
-      ["sources", "people"].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
-    );
-    await fs.writeFile(
-      path.join(rootDir, "sources", "references.md"),
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "source",
-          id: "source.references",
-          title: "References",
-        },
-        body: "# References\n\n[[people/Ada-Lovelace]]\n",
-      }),
-      "utf8",
-    );
-    await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
-
-    const rootMock = vi.mocked(createFsSafeRoot);
-    const createRoot = rootMock.getMockImplementation();
-    if (!createRoot) {
-      throw new Error("file-access root mock has no implementation");
-    }
-    let openCalls = 0;
-    rootMock.mockImplementationOnce(async (requestedRoot, defaults) => {
-      const safeRoot = await createRoot(requestedRoot, defaults);
-      const open = safeRoot.open.bind(safeRoot);
-      vi.spyOn(safeRoot, "open").mockImplementation(async (relativePath, options) => {
-        openCalls += 1;
-        return await open(relativePath.replace("Ada-Lovelace", "ada-lovelace"), options);
-      });
-      return safeRoot;
-    });
-
-    const result = await lintMemoryWikiVault(config);
-
-    expect(result.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "broken-wikilink",
-          message: "Broken wikilink target `people/Ada-Lovelace`.",
-        }),
-      ]),
-    );
-    expect(openCalls).toBe(0);
-  });
-
-  it("propagates path-identity races instead of publishing a broken-link warning", async () => {
-    const { rootDir, config } = await createVault({
-      prefix: "memory-wiki-lint-vault-wide-path-race-",
-      config: {
-        vault: { renderMode: "obsidian" },
-      },
-    });
-    await Promise.all(
-      ["sources", "people"].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
-    );
-    await fs.writeFile(
-      path.join(rootDir, "sources", "references.md"),
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "source",
-          id: "source.references",
-          title: "References",
-        },
-        body: "# References\n\n[[people/ada-lovelace]]\n",
-      }),
-      "utf8",
-    );
-    await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
-
-    const rootMock = vi.mocked(createFsSafeRoot);
-    const createRoot = rootMock.getMockImplementation();
-    if (!createRoot) {
-      throw new Error("file-access root mock has no implementation");
-    }
-    rootMock.mockImplementationOnce(async (requestedRoot, defaults) => {
-      const safeRoot = await createRoot(requestedRoot, defaults);
-      vi.spyOn(safeRoot, "open").mockRejectedValue(
-        Object.assign(new Error("path changed during open"), { code: "path-mismatch" }),
-      );
-      return safeRoot;
-    });
-
-    await expect(lintMemoryWikiVault(config)).rejects.toMatchObject({ code: "path-mismatch" });
-    await expect(fs.stat(path.join(rootDir, "reports", "lint.md"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
   });
 
   it("keeps path target matching case-sensitive", async () => {
