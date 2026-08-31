@@ -22,7 +22,11 @@ export function normalizeMSTeamsUserInput(raw: string): string {
 
 /** Match the stable user-id shape accepted by runtime allowlist projection and targeting. */
 export function isStableMSTeamsUserId(raw: string): boolean {
-  return MSTEAMS_STABLE_USER_ID.test(normalizeMSTeamsUserInput(raw));
+  const unscoped = stripProviderPrefix(raw).trim();
+  if (/^conversation:/i.test(unscoped)) {
+    return false;
+  }
+  return MSTEAMS_STABLE_USER_ID.test(normalizeMSTeamsUserInput(unscoped));
 }
 
 export function normalizeMSTeamsConversationId(raw: string): string {
