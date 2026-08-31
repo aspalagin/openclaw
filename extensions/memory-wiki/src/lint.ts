@@ -206,30 +206,6 @@ const NON_TARGET_PATH_ERROR_CODES = new Set([
   "symlink",
 ]);
 
-async function hasExactVaultPathSpelling(
-  vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
-  requestedPath: string,
-  directoryEntries: Map<string, Promise<Set<string>>>,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  let parentPath = "";
-  for (const segment of requestedPath.split("/")) {
-    signal?.throwIfAborted();
-    let pendingEntries = directoryEntries.get(parentPath);
-    if (!pendingEntries) {
-      pendingEntries = vaultRoot.list(parentPath).then((entries) => new Set(entries));
-      directoryEntries.set(parentPath, pendingEntries);
-    }
-    const entries = await pendingEntries;
-    signal?.throwIfAborted();
-    if (!entries.has(segment)) {
-      return false;
-    }
-    parentPath = parentPath ? `${parentPath}/${segment}` : segment;
-  }
-  return true;
-}
-
 function resolveLintFallbackMarkdownPath(rawTarget: string): string | undefined {
   if (!isLintPathStyleTarget(rawTarget)) {
     return undefined;
@@ -253,14 +229,10 @@ function resolveLintFallbackMarkdownPath(rawTarget: string): string | undefined 
 async function hasVaultMarkdownPathTarget(
   vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
   requestedPath: string,
-  directoryEntries: Map<string, Promise<Set<string>>>,
   signal?: AbortSignal,
 ): Promise<boolean> {
   signal?.throwIfAborted();
   try {
-    if (!(await hasExactVaultPathSpelling(vaultRoot, requestedPath, directoryEntries, signal))) {
-      return false;
-    }
     const opened = await vaultRoot.open(requestedPath, {
       hardlinks: "allow",
       symlinks: "reject",
@@ -307,7 +279,6 @@ async function collectBrokenLinkIssues(
   });
   signal?.throwIfAborted();
   const directPathTargets = new Map<string, Promise<boolean>>();
-  const directoryEntries = new Map<string, Promise<Set<string>>>();
 
   const issues: MemoryWikiLintIssue[] = [];
   for (const page of pages) {
@@ -325,12 +296,7 @@ async function collectBrokenLinkIssues(
                 `Memory Wiki lint fallback path check budget exceeded (${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique targets)`,
               );
             }
-            pending = hasVaultMarkdownPathTarget(
-              vaultRoot,
-              requestedPath,
-              directoryEntries,
-              signal,
-            );
+            pending = hasVaultMarkdownPathTarget(vaultRoot, requestedPath, signal);
             directPathTargets.set(requestedPath, pending);
           }
           valid = await pending;

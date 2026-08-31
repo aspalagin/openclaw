@@ -187,7 +187,62 @@ describe("lintMemoryWikiVault direct path safety", () => {
         }),
       ]),
     );
-    expect(openCalls).toBe(0);
+    expect(openCalls).toBe(1);
+  });
+
+  it("resolves a target in a large directory without enumerating its siblings", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-lint-vault-wide-large-directory-",
+      config: {
+        vault: { renderMode: "obsidian" },
+      },
+    });
+    await Promise.all(
+      ["sources", "people"].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
+    );
+    await fs.writeFile(
+      path.join(rootDir, "sources", "references.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.references",
+          title: "References",
+        },
+        body: "# References\n\n[[people/ada-lovelace]]\n",
+      }),
+      "utf8",
+    );
+    await Promise.all([
+      fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8"),
+      ...Array.from({ length: 2_048 }, (_, index) =>
+        fs.writeFile(
+          path.join(rootDir, "people", `unrelated-${index}.md`),
+          "# Unrelated\n",
+          "utf8",
+        ),
+      ),
+    ]);
+
+    const rootMock = vi.mocked(createFsSafeRoot);
+    const createRoot = rootMock.getMockImplementation();
+    if (!createRoot) {
+      throw new Error("file-access root mock has no implementation");
+    }
+    let listCalls = 0;
+    rootMock.mockImplementationOnce(async (requestedRoot, defaults) => {
+      const safeRoot = await createRoot(requestedRoot, defaults);
+      const list = safeRoot.list.bind(safeRoot);
+      vi.spyOn(safeRoot, "list").mockImplementation(async (...args) => {
+        listCalls += 1;
+        return await list(...args);
+      });
+      return safeRoot;
+    });
+
+    const result = await lintMemoryWikiVault(config);
+
+    expect(result.issues.filter((issue) => issue.code === "broken-wikilink")).toEqual([]);
+    expect(listCalls).toBe(0);
   });
 
   it("propagates path-identity races instead of publishing a broken-link warning", async () => {
