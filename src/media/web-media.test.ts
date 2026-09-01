@@ -1285,9 +1285,10 @@ describe("loadWebMedia", () => {
     expect(result.contentType).toBe("application/epub+zip");
   });
 
+  const FICTIONBOOK_NAMESPACE = "http://www.gribuser.ru/xml/fictionbook/2.0";
   const FICTIONBOOK_DOCUMENT =
     '<?xml version="1.0" encoding="utf-8"?>\n<!-- exported -->\n' +
-    '<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">' +
+    `<FictionBook xmlns="${FICTIONBOOK_NAMESPACE}" xmlns:l="http://www.w3.org/1999/xlink">` +
     "<description/></FictionBook>";
 
   it.each(["book.fb2", "book.xml"])(
@@ -1304,7 +1305,7 @@ describe("loadWebMedia", () => {
     const result = await loadDocumentWithHostRead(
       "prefixed.fb2",
       '\uFEFF<?xml version="1.0"?><!DOCTYPE FictionBook>' +
-        "<fb:FictionBook xmlns:fb='http://www.gribuser.ru/xml/fictionbook/2.0'/>",
+        `<fb:FictionBook xmlns:fb='${FICTIONBOOK_NAMESPACE}'/>`,
     );
 
     expect(result.kind).toBe("document");
@@ -1335,6 +1336,16 @@ describe("loadWebMedia", () => {
       name: "a prefixed FictionBook root with the namespace on another prefix",
       fileName: "mismatched-prefix.fb2",
       body: '<x:FictionBook xmlns:x="urn:not-fictionbook" xmlns:fb="http://www.gribuser.ru/xml/fictionbook/2.0"/>',
+    },
+    {
+      name: "an unprefixed FictionBook root with a namespace decoy inside another attribute",
+      fileName: "decoy-default.xml",
+      body: `<FictionBook note=' xmlns="${FICTIONBOOK_NAMESPACE}" '/>`,
+    },
+    {
+      name: "a prefixed FictionBook root with a namespace decoy inside another attribute",
+      fileName: "decoy-prefix.fb2",
+      body: `<x:FictionBook xmlns:x="urn:not-fictionbook" note=' xmlns:x="${FICTIONBOOK_NAMESPACE}" '/>`,
     },
     {
       name: "a FictionBook element nested below a foreign root",

@@ -320,8 +320,29 @@ function hasHtmlDocumentShape(text: string): boolean {
 const FICTIONBOOK_ROOT_RE =
   /^\uFEFF?(?:\s*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>))*\s*<(?:(?<prefix>[A-Za-z_][\w.-]*):)?FictionBook(?=[\s/>])(?<attributes>[^>]*)>/u;
 const FICTIONBOOK_NAMESPACE = "http://www.gribuser.ru/xml/fictionbook/2.0";
-const XML_NAMESPACE_ATTRIBUTE_RE =
-  /(?:^|\s)xmlns(?::(?<prefix>[A-Za-z_][\w.-]*))?\s*=\s*(["'])(?<namespace>[^"']*)\2/gu;
+const XML_ROOT_ATTRIBUTE_RE =
+  /\s+(?<name>[A-Za-z_:][\w:.-]*)\s*=\s*(?<quote>["'])(?<value>[\s\S]*?)\k<quote>/guy;
+
+function readXmlRootAttribute(attributes: string, name: string): string | undefined {
+  let cursor = 0;
+  let value: string | undefined;
+  while (cursor < attributes.length) {
+    XML_ROOT_ATTRIBUTE_RE.lastIndex = cursor;
+    const attribute = XML_ROOT_ATTRIBUTE_RE.exec(attributes);
+    if (!attribute) {
+      break;
+    }
+    cursor = XML_ROOT_ATTRIBUTE_RE.lastIndex;
+    if (attribute.groups?.name !== name) {
+      continue;
+    }
+    if (value !== undefined) {
+      return undefined;
+    }
+    value = attribute.groups.value;
+  }
+  return /^\s*\/?\s*$/u.test(attributes.slice(cursor)) ? value : undefined;
+}
 
 function hasFictionBookDocumentShape(text: string): boolean {
   const root = FICTIONBOOK_ROOT_RE.exec(text.slice(0, 8192));
@@ -329,15 +350,11 @@ function hasFictionBookDocumentShape(text: string): boolean {
     return false;
   }
   const rootPrefix = root.groups?.prefix;
-  for (const declaration of (root.groups?.attributes ?? "").matchAll(XML_NAMESPACE_ATTRIBUTE_RE)) {
-    if (
-      declaration.groups?.prefix === rootPrefix &&
-      declaration.groups?.namespace === FICTIONBOOK_NAMESPACE
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const namespaceAttribute = rootPrefix ? `xmlns:${rootPrefix}` : "xmlns";
+  return (
+    readXmlRootAttribute(root.groups?.attributes ?? "", namespaceAttribute) ===
+    FICTIONBOOK_NAMESPACE
+  );
 }
 
 type HostReadHtmlTrust =
