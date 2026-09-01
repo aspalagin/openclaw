@@ -6,8 +6,10 @@ import {
 } from "openclaw/plugin-sdk/channel-config-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { tryReadSecretFileSync } from "openclaw/plugin-sdk/secret-file-runtime";
-import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { classifyMSTeamsEntryAuthentication } from "./ingress-identity.js";
+import {
+  classifyMSTeamsEntryAuthentication,
+  normalizeMSTeamsDmPrincipal,
+} from "./ingress-identity.js";
 import { resolveMSTeamsCredentials } from "./token.js";
 
 export type ResolvedMSTeamsAccount = {
@@ -87,7 +89,6 @@ export const resolveMSTeamsDmPolicy = createScopedDmSecurityResolver<ResolvedMST
     allowFrom: cfg.channels?.msteams?.allowFrom,
   }),
   policyPathSuffix: "dmPolicy",
-  // Keep audit counting aligned with inbound sender-id matching; prefixes are not aliases.
-  normalizeEntry: normalizeLowercaseStringOrEmpty,
+  normalizeEntry: normalizeMSTeamsDmPrincipal,
   classifyEntryAuthentication: classifyMSTeamsEntryAuthentication,
 });

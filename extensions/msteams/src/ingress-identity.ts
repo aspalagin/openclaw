@@ -15,18 +15,23 @@ function stripProviderPrefix(raw: string): string {
 }
 
 export function normalizeMSTeamsUserInput(raw: string): string {
-  return stripProviderPrefix(raw)
+  return stripProviderPrefix(raw.trim())
     .replace(/^(user|conversation):/i, "")
     .trim();
 }
 
+/** Canonical user principal shared by startup projection, security audit, and ingress. */
+export function normalizeMSTeamsDmPrincipal(raw: string): string {
+  return normalizeMSTeamsUserInput(raw).toLowerCase();
+}
+
 /** Match the stable user-id shape accepted by runtime allowlist projection and targeting. */
 export function isStableMSTeamsUserId(raw: string): boolean {
-  const unscoped = stripProviderPrefix(raw).trim();
+  const unscoped = stripProviderPrefix(raw.trim()).trim();
   if (/^conversation:/i.test(unscoped)) {
     return false;
   }
-  return MSTEAMS_STABLE_USER_ID.test(normalizeMSTeamsUserInput(unscoped));
+  return MSTEAMS_STABLE_USER_ID.test(normalizeMSTeamsDmPrincipal(unscoped));
 }
 
 export function normalizeMSTeamsConversationId(raw: string): string {
@@ -70,7 +75,7 @@ function normalizeMSTeamsIngressUserId(value?: string | null): string | null {
   if (/^conversation:/i.test(unscoped)) {
     return null;
   }
-  return unscoped.replace(/^user:/i, "").trim() || null;
+  return normalizeMSTeamsDmPrincipal(unscoped) || null;
 }
 
 function normalizeSenderNameIngressValue(value?: string | null): string | null {
