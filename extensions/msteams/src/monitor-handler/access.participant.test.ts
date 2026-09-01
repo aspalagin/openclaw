@@ -1,6 +1,8 @@
 import type { ResolveStableChannelMessageIngressParams } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { describe, expect, it, vi } from "vitest";
+import { resolveMSTeamsAccount, resolveMSTeamsDmPolicy } from "../channel-config.js";
 import { installMSTeamsTestRuntime } from "../monitor-handler.test-helpers.js";
+import { projectStableMSTeamsUserAllowlist } from "../resolve-allowlist.js";
 import { resolveMSTeamsSenderAccess } from "./access.js";
 
 const observed = vi.hoisted(() =>
@@ -19,6 +21,62 @@ vi.mock("openclaw/plugin-sdk/channel-ingress-runtime", async (importOriginal) =>
 });
 
 describe("Teams participant domain", () => {
+  it("keeps startup projection, audit identity, and inbound admission on one principal", async () => {
+    installMSTeamsTestRuntime({ readAllowFromStore: vi.fn(async () => []) });
+    const stableId = "40a1a0ed-4ff2-4164-a219-55518990c197";
+    const authoredAllowFrom = [
+      stableId.toUpperCase(),
+      `user:${stableId}`,
+      `teams:${stableId}`,
+      `msteams:user:${stableId}`,
+    ];
+    const cfg = {
+      channels: {
+        msteams: {
+          appId: "app-id",
+          appPassword: "secret",
+          dmPolicy: "allowlist" as const,
+          allowFrom: authoredAllowFrom,
+        },
+      },
+    };
+    const projectedAllowFrom = projectStableMSTeamsUserAllowlist(authoredAllowFrom);
+    const auditPolicy = resolveMSTeamsDmPolicy({
+      cfg,
+      account: resolveMSTeamsAccount(cfg),
+    });
+    const auditedPrincipals = new Set(
+      authoredAllowFrom.map((entry) => auditPolicy.normalizeEntry?.(entry)),
+    );
+
+    expect(projectedAllowFrom).toEqual([stableId]);
+    expect([...auditedPrincipals]).toEqual([stableId]);
+
+    const result = await resolveMSTeamsSenderAccess({
+      cfg: {
+        channels: {
+          msteams: {
+            dmPolicy: "allowlist",
+            allowFrom: projectedAllowFrom,
+          },
+        },
+      },
+      activity: {
+        type: "message",
+        id: "message",
+        text: "hello",
+        serviceUrl: "https://fixture.invalid",
+        channelId: "msteams",
+        from: { id: "opaque-account", aadObjectId: stableId.toUpperCase(), name: "Alice" },
+        recipient: { id: "bot", name: "Bot" },
+        conversation: { id: "conversation", conversationType: "personal" },
+      },
+    });
+
+    expect(result.senderAccess.decision).toBe("allow");
+    expect(result.senderAccess.effectiveAllowFrom).toEqual([stableId]);
+  });
+
   it.each([
     ["bare", "40a1a0ed-4ff2-4164-a219-55518990c197", "allow"],
     ["user-prefixed", "user:40a1a0ed-4ff2-4164-a219-55518990c197", "allow"],

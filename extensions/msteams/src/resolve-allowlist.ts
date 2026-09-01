@@ -16,6 +16,7 @@ import {
   isStableMSTeamsUserId,
   looksLikeMSTeamsConversationId,
   normalizeMSTeamsConversationId,
+  normalizeMSTeamsDmPrincipal,
   normalizeMSTeamsUserInput,
 } from "./ingress-identity.js";
 
@@ -97,7 +98,7 @@ function normalizeStaticMSTeamsAllowEntry(raw: string): string | undefined {
     return trimmed;
   }
   // Preserve the previous startup projection for typed hexadecimal entries.
-  const id = normalizeMSTeamsUserInput(trimmed);
+  const id = normalizeMSTeamsDmPrincipal(trimmed);
   return isStableMSTeamsUserId(id) ? id : undefined;
 }
 

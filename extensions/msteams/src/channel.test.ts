@@ -292,7 +292,8 @@ describe("msteamsPlugin", () => {
         allowFromPath: "channels.msteams.",
       });
       expect(result?.normalizeEntry?.(" OWNER ")).toBe("owner");
-      expect(result?.normalizeEntry?.(" msteams:user:OWNER ")).toBe("msteams:user:owner");
+      expect(result?.normalizeEntry?.(" msteams:user:OWNER ")).toBe("owner");
+      expect(result?.normalizeEntry?.(" teams:OWNER ")).toBe("owner");
     }
     expect(msteamsSetupPlugin.security?.resolveDmPolicy).toBe(
       msteamsPlugin.security?.resolveDmPolicy,
@@ -631,6 +632,7 @@ describe("msTeamsApprovalAuth", () => {
   it.each([
     ["conversation", `conversation:${otherUserId}`],
     ["provider-prefixed conversation", `msteams:conversation:${otherUserId}`],
+    ["whitespace-padded provider conversation", ` msteams:conversation:${otherUserId} `],
     ["chat", `chat:${otherUserId}`],
     ["email", "owner@example.com"],
     ["display name", "Owner Display"],
