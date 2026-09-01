@@ -68,6 +68,12 @@ describe("telegramOutbound rich local media", () => {
         cfg: { channels: { telegram: { richMessages: true } } } as never,
       }),
     ).toBe(false);
+    expect(
+      telegramOutbound.preferPayloadForMedia?.({
+        payload: { text: "Chart", mediaUrls: [String.raw`C:\workspace\chart.png`] },
+        cfg: { channels: { telegram: { richMessages: true } } } as never,
+      }),
+    ).toBe(true);
   });
 
   it("keeps legacy-path attachments in payload order beside embedded local media", async () => {

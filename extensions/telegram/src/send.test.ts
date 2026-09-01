@@ -1507,6 +1507,54 @@ describe("sendMessageTelegram", () => {
     expect(richMessage?.media).toBeUndefined();
   });
 
+  it.each([
+    { tag: "IMG", contentType: "image/png", fileName: "chart.png", blockType: "photo" },
+    { tag: "VIDEO", contentType: "video/mp4", fileName: "clip.mp4", blockType: "video" },
+  ])("classifies uppercase local $tag elements by tag type", async (testCase) => {
+    const fileData = Buffer.from(`local ${testCase.blockType}`);
+    botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: fileData,
+      contentType: testCase.contentType,
+      fileName: testCase.fileName,
+    });
+
+    await sendMessageTelegram(
+      "123",
+      testCase.tag === "IMG"
+        ? `<${testCase.tag} src="/workspace/${testCase.fileName}"/>`
+        : `<${testCase.tag} src="/workspace/${testCase.fileName}"></${testCase.tag}>`,
+      {
+        cfg: { channels: { telegram: { richMessages: true } } },
+        token: "tok",
+        mediaLocalRoots: ["/workspace"],
+      },
+    );
+
+    const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+    expect(richMessage?.blocks).toMatchObject([{ type: testCase.blockType }]);
+  });
+
+  it("uploads a Windows absolute image path into a rich message", async () => {
+    const source = String.raw`C:\workspace\chart.png`;
+    botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("local image"),
+      contentType: "image/png",
+      fileName: "chart.png",
+    });
+
+    await sendMessageTelegram("123", `<img src="${source}"/>`, {
+      cfg: { channels: { telegram: { richMessages: true } } },
+      token: "tok",
+      mediaLocalRoots: [String.raw`C:\workspace`],
+    });
+
+    expect(loadWebMedia).toHaveBeenCalledWith(source, expect.any(Object));
+    const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+    expect(richMessage?.blocks).toMatchObject([{ type: "photo" }]);
+  });
+
   it.each(["ogg", "opus", "oga"])(
     "uploads a local .%s file as a typed voice-note block",
     async (extension) => {

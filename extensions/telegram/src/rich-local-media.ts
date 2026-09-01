@@ -9,7 +9,7 @@ import { buildOutboundMediaLoadOptions, getImageMetadata, loadWebMedia } from ".
 const MAX_RICH_PHOTO_BYTES = 10 * 1024 * 1024;
 const MAX_TELEGRAM_PHOTO_DIMENSION_SUM = 10_000;
 const MAX_TELEGRAM_PHOTO_ASPECT_RATIO = 20;
-const LOCAL_MEDIA_SOURCE_RE = /^(?:file:\/\/)?\/(?!\/)/u;
+const LOCAL_MEDIA_SOURCE_RE = /^(?:(?:file:\/\/)?\/(?!\/)|[A-Za-z]:[\\/])/u;
 const LOCAL_MEDIA_TAG_RE = /<(img|video|audio)\b([^>]*?)\bsrc=(["'])([^"']+)\3([^>]*)>/giu;
 const LOCAL_MARKDOWN_IMAGE_RE =
   /!\[([^\]\n]*)\]\(((?:file:\/\/)?\/(?!\/)[^\s)"]+)(?:\s+"([^"\n]*)")?\)/gu;
@@ -34,7 +34,8 @@ export function isTelegramRichLocalMediaSource(source: string): boolean {
 }
 
 function richMediaTypeForTag(tag: string): RichMediaElementType {
-  return tag === "img" ? "photo" : tag === "video" ? "video" : "audio";
+  const normalizedTag = tag.toLowerCase();
+  return normalizedTag === "img" ? "photo" : normalizedTag === "video" ? "video" : "audio";
 }
 
 function richMediaElementType(type: RichMediaType): RichMediaElementType {
