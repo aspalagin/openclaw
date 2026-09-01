@@ -397,6 +397,17 @@ export function inputRichBlockMediaSources(blocks: readonly InputRichBlock[]): S
       case "list":
         block.items.forEach((item) => item.blocks.forEach(visit));
         break;
+      case "anchor":
+      case "divider":
+      case "footer":
+      case "heading":
+      case "map":
+      case "mathematical_expression":
+      case "paragraph":
+      case "pre":
+      case "pullquote":
+      case "table":
+        break;
     }
   };
   blocks.forEach(visit);
