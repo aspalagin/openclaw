@@ -19,6 +19,47 @@ vi.mock("openclaw/plugin-sdk/channel-ingress-runtime", async (importOriginal) =>
 });
 
 describe("Teams participant domain", () => {
+  it.each([
+    ["bare", "40a1a0ed-4ff2-4164-a219-55518990c197", "allow"],
+    ["user-prefixed", "user:40a1a0ed-4ff2-4164-a219-55518990c197", "allow"],
+    ["provider-prefixed", "teams:40a1a0ed-4ff2-4164-a219-55518990c197", "allow"],
+    ["provider-and-user-prefixed", "msteams:user:40a1a0ed-4ff2-4164-a219-55518990c197", "allow"],
+    ["conversation-prefixed", "conversation:40a1a0ed-4ff2-4164-a219-55518990c197", "block"],
+    [
+      "provider-and-conversation-prefixed",
+      "msteams:conversation:40a1a0ed-4ff2-4164-a219-55518990c197",
+      "block",
+    ],
+  ] as const)(
+    "applies a typed %s entry before message handling",
+    async (_label, allowEntry, expected) => {
+      installMSTeamsTestRuntime({ readAllowFromStore: vi.fn(async () => []) });
+      const stableId = "40a1a0ed-4ff2-4164-a219-55518990c197";
+      const result = await resolveMSTeamsSenderAccess({
+        cfg: {
+          channels: {
+            msteams: {
+              dmPolicy: "allowlist",
+              allowFrom: [allowEntry],
+            },
+          },
+        },
+        activity: {
+          type: "message",
+          id: "message",
+          text: "hello",
+          serviceUrl: "https://fixture.invalid",
+          channelId: "msteams",
+          from: { id: "opaque-account", aadObjectId: stableId, name: "Alice" },
+          recipient: { id: "bot", name: "Bot" },
+          conversation: { id: "conversation", conversationType: "personal" },
+        },
+      });
+
+      expect(result.senderAccess.decision).toBe(expected);
+    },
+  );
+
   it.each(["entra", "application", "unknown"] as const)(
     "retains %s identity evidence",
     async (kind) => {

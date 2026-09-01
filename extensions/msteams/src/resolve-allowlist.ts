@@ -96,7 +96,9 @@ function normalizeStaticMSTeamsAllowEntry(raw: string): string | undefined {
   if (trimmed === "*" || /^accessGroup:/i.test(trimmed)) {
     return trimmed;
   }
-  return isStableMSTeamsUserId(trimmed) ? normalizeMSTeamsUserInput(trimmed) : undefined;
+  // Preserve the previous startup projection for typed hexadecimal entries.
+  const id = normalizeMSTeamsUserInput(trimmed);
+  return isStableMSTeamsUserId(id) ? id : undefined;
 }
 
 export function projectStableMSTeamsUserAllowlist(entries?: string[]): string[] | undefined {
