@@ -61,13 +61,27 @@ function normalizeIngressValue(value?: string | null): string | null {
   return normalizeOptionalLowercaseString(value) ?? null;
 }
 
+function normalizeMSTeamsIngressUserId(value?: string | null): string | null {
+  const normalized = normalizeIngressValue(value);
+  if (!normalized) {
+    return null;
+  }
+  const unscoped = stripProviderPrefix(normalized).trim();
+  if (/^conversation:/i.test(unscoped)) {
+    return null;
+  }
+  return unscoped.replace(/^user:/i, "").trim() || null;
+}
+
 function normalizeSenderNameIngressValue(value?: string | null): string | null {
   const normalized = normalizeIngressValue(value);
   if (!normalized) {
     return null;
   }
   // Conversation allowlist entries must never become spoofable display-name principals.
-  return looksLikeMSTeamsConversationId(normalizeMSTeamsConversationId(normalized))
+  return looksLikeMSTeamsConversationId(
+    normalizeMSTeamsConversationId(stripProviderPrefix(normalized)),
+  )
     ? null
     : normalized;
 }
@@ -83,7 +97,7 @@ export const msteamsIngressIdentity = {
   // Bot Framework authenticates the connector and vouches for the activity, without this
   // plugin independently proving exact ownership of every from.id representation.
   authentication: "asserted",
-  normalize: normalizeIngressValue,
+  normalize: normalizeMSTeamsIngressUserId,
   aliases: [
     {
       key: "sender-name",
@@ -115,16 +129,14 @@ export const msteamsIngressIdentity = {
 export function classifyMSTeamsEntryAuthentication(
   raw: string,
 ): IdentifierAuthentication | undefined {
-  const unscoped = stripProviderPrefix(raw).trim();
-  const normalized = normalizeMSTeamsUserInput(raw);
+  const normalized = normalizeMSTeamsIngressUserId(raw);
   if (
     !normalized ||
     normalized === "*" ||
-    /^conversation:/i.test(unscoped) ||
     /^accessGroup:/i.test(normalized) ||
     looksLikeMSTeamsConversationId(normalizeMSTeamsConversationId(normalized))
   ) {
     return undefined;
   }
-  return isStableMSTeamsUserId(normalized) ? "asserted" : "mutable";
+  return MSTEAMS_STABLE_USER_ID.test(normalized) ? "asserted" : "mutable";
 }
