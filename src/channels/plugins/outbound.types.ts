@@ -207,7 +207,16 @@ export type ChannelOutboundAdapter = {
     params: ChannelOutboundNormalizePayloadBatchParams,
   ) => ReadonlyArray<ReplyPayload | null>;
   sendTextOnlyErrorPayloads?: boolean;
-  /** Route text and local media together when the channel can embed the media in its payload. */
+  /**
+   * Opt a media-bearing payload into one `sendPayload` call instead of core's
+   * default `sendMedia` fan-out. The callback is a routing decision only;
+   * returning false preserves the normal text/media fallback path.
+   *
+   * When this returns true, `sendPayload` owns every text and media part in the
+   * original payload, including ordering, reply semantics, and any fallback for
+   * media it cannot embed. `forceDocument` is forwarded so adapters can decline
+   * the combined route when it would change the caller's requested media mode.
+   */
   preferPayloadForMedia?: (params: {
     payload: ReplyPayload;
     cfg: OpenClawConfig;

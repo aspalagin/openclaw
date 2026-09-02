@@ -1555,6 +1555,46 @@ describe("sendMessageTelegram", () => {
     expect(richMessage?.blocks).toMatchObject([{ type: "photo" }]);
   });
 
+  it("uploads a Windows absolute Markdown image path into a rich message", async () => {
+    const source = String.raw`C:\workspace\chart.png`;
+    botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("local image"),
+      contentType: "image/png",
+      fileName: "chart.png",
+    });
+
+    await sendMessageTelegram("123", `![Chart](${source})`, {
+      cfg: { channels: { telegram: { richMessages: true } } },
+      token: "tok",
+      mediaLocalRoots: [String.raw`C:\workspace`],
+    });
+
+    expect(loadWebMedia).toHaveBeenCalledWith(source, expect.any(Object));
+    const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+    expect(richMessage?.blocks).toMatchObject([{ type: "photo" }]);
+  });
+
+  it("uploads an unquoted local HTML image source into a rich message", async () => {
+    const source = "/workspace/chart.png";
+    botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("local image"),
+      contentType: "image/png",
+      fileName: "chart.png",
+    });
+
+    await sendMessageTelegram("123", `<img src=${source}>`, {
+      cfg: { channels: { telegram: { richMessages: true } } },
+      token: "tok",
+      mediaLocalRoots: ["/workspace"],
+    });
+
+    expect(loadWebMedia).toHaveBeenCalledWith(source, expect.any(Object));
+    const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+    expect(richMessage?.blocks).toMatchObject([{ type: "photo" }]);
+  });
+
   it.each(["ogg", "opus", "oga"])(
     "uploads a local .%s file as a typed voice-note block",
     async (extension) => {
