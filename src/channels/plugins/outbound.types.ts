@@ -216,6 +216,8 @@ export type ChannelOutboundAdapter = {
    * original payload, including ordering, reply semantics, and any fallback for
    * media it cannot embed. `forceDocument` is forwarded so adapters can decline
    * the combined route when it would change the caller's requested media mode.
+   * Core ignores this hook unless the selected message/outbound durable-final
+   * capability map explicitly declares `payload: true`.
    */
   preferPayloadForMedia?: (params: {
     payload: ReplyPayload;

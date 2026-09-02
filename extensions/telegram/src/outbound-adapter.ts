@@ -431,6 +431,8 @@ export async function sendTelegramPayloadMessages(params: {
   if (
     richMessages &&
     params.baseOpts.forceDocument !== true &&
+    payload.audioAsVoice !== true &&
+    payload.videoAsNote !== true &&
     text.trim() &&
     mediaUrls.some(isTelegramRichLocalMediaSource)
   ) {
@@ -539,6 +541,8 @@ export function createTelegramOutboundAdapter(
     normalizePayloadBatch: ({ payloads }) => normalizeTelegramFallbackPayloadBatch(payloads),
     preferPayloadForMedia: ({ payload, cfg, accountId, forceDocument }) =>
       forceDocument !== true &&
+      payload.audioAsVoice !== true &&
+      payload.videoAsNote !== true &&
       typeof payload.text === "string" &&
       payload.text.trim().length > 0 &&
       resolveSendableOutboundReplyParts(payload).mediaUrls.some(isTelegramRichLocalMediaSource) &&

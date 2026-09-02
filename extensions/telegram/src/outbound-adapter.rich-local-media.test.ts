@@ -76,6 +76,74 @@ describe("telegramOutbound rich local media", () => {
     ).toBe(true);
   });
 
+  it("keeps explicit voice and video-note requests on the legacy media route", () => {
+    const cfg = { channels: { telegram: { richMessages: true } } } as never;
+
+    expect(
+      telegramOutbound.preferPayloadForMedia?.({
+        payload: {
+          text: "Voice",
+          mediaUrls: ["/workspace/voice.ogg"],
+          audioAsVoice: true,
+        },
+        cfg,
+      }),
+    ).toBe(false);
+    expect(
+      telegramOutbound.preferPayloadForMedia?.({
+        payload: {
+          text: "Video note",
+          mediaUrls: ["/workspace/note.mp4"],
+          videoAsNote: true,
+        },
+        cfg,
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    [
+      "voice",
+      {
+        text: "Voice",
+        mediaUrls: ["/workspace/voice.ogg"],
+        audioAsVoice: true,
+      },
+      { asVoice: true },
+    ],
+    [
+      "video note",
+      {
+        text: "Video note",
+        mediaUrls: ["/workspace/note.mp4"],
+        videoAsNote: true,
+      },
+      { asVideoNote: true },
+    ],
+  ] as const)(
+    "preserves explicit %s delivery through sendPayload",
+    async (_label, payload, mode) => {
+      loadWebMediaMock.mockRejectedValue(new Error("rich local media resolution must not run"));
+      sendMessageTelegramMock.mockResolvedValue({ messageId: "tg-1", chatId: "12345" });
+
+      await telegramOutbound.sendPayload!({
+        cfg: { channels: { telegram: { richMessages: true } } } as never,
+        to: "12345",
+        text: "",
+        payload: { ...payload, mediaUrls: [...payload.mediaUrls] },
+        mediaLocalRoots: ["/workspace"],
+        deps: { sendTelegram: sendMessageTelegramMock },
+      });
+
+      expect(loadWebMediaMock).not.toHaveBeenCalled();
+      expect(sendMessageTelegramMock).toHaveBeenCalledTimes(1);
+      expect(callOptionsAt(sendMessageTelegramMock, 0, "12345", payload.text)).toMatchObject({
+        mediaUrl: payload.mediaUrls[0],
+        ...mode,
+      });
+    },
+  );
+
   it("keeps legacy-path attachments in payload order beside embedded local media", async () => {
     loadWebMediaMock.mockImplementation(async (source: string) =>
       source.endsWith(".mp3")

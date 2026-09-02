@@ -240,6 +240,8 @@ function createPluginHandler(
   const messageMedia = params.message?.send?.media;
   const messagePayload = params.message?.send?.payload;
   const messageLifecycle = params.message?.send?.lifecycle;
+  const durableFinalCapabilities =
+    params.message?.durableFinal?.capabilities ?? outbound?.deliveryCapabilities?.durableFinal;
   const assertUnknownSendReconciliationKind = (kind: ChannelMessageSendAttemptKind): void => {
     const durableFinal = params.message?.durableFinal;
     if (
@@ -357,15 +359,16 @@ function createPluginHandler(
         }
       : undefined,
     sendTextOnlyErrorPayloads: outbound?.sendTextOnlyErrorPayloads === true,
-    preferPayloadForMedia: outbound?.preferPayloadForMedia
-      ? (payload, overrides) =>
-          outbound.preferPayloadForMedia!({
-            payload,
-            cfg: params.cfg,
-            accountId: params.accountId,
-            forceDocument: overrides?.forceDocument,
-          })
-      : undefined,
+    preferPayloadForMedia:
+      outbound?.preferPayloadForMedia && durableFinalCapabilities?.payload === true
+        ? (payload, overrides) =>
+            outbound.preferPayloadForMedia!({
+              payload,
+              cfg: params.cfg,
+              accountId: params.accountId,
+              forceDocument: overrides?.forceDocument,
+            })
+        : undefined,
     presentationCapabilities: outbound?.resolvePresentationCapabilities
       ? outbound.resolvePresentationCapabilities({
           cfg: params.cfg,

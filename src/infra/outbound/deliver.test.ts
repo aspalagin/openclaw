@@ -5671,7 +5671,12 @@ describe("deliverOutboundPayloads", () => {
     );
     const sendPayload = installPayloadOutbound(
       { channel: "matrix", messageId: "mx-payload" },
-      { sendText, sendMedia, preferPayloadForMedia },
+      {
+        sendText,
+        sendMedia,
+        preferPayloadForMedia,
+        deliveryCapabilities: { durableFinal: { payload: true } },
+      },
     );
     const payload = { text: "Chart", mediaUrls: ["/workspace/chart.png"] };
 
@@ -5689,6 +5694,28 @@ describe("deliverOutboundPayloads", () => {
       forceDocument: true,
     });
     expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("keeps media fan-out when a payload preference lacks durable payload capability", async () => {
+    const sendText = vi.fn();
+    const sendMedia = vi.fn(async (_ctx: Parameters<OutboundMediaSender>[0]) => ({
+      channel: "matrix",
+      messageId: "mx-media",
+    }));
+    const preferPayloadForMedia = vi.fn(() => true);
+    const sendPayload = installPayloadOutbound(
+      { channel: "matrix", messageId: "mx-payload" },
+      { sendText, sendMedia, preferPayloadForMedia },
+    );
+
+    const results = await deliverMatrix({
+      payloads: [{ text: "Chart", mediaUrls: ["/workspace/chart.png"] }],
+    });
+
+    expect(results).toEqual([{ channel: "matrix", messageId: "mx-media" }]);
+    expect(preferPayloadForMedia).not.toHaveBeenCalled();
+    expect(sendPayload).not.toHaveBeenCalled();
+    expect(sendMedia).toHaveBeenCalledTimes(1);
   });
 
   it.each([

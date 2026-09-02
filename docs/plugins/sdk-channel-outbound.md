@@ -219,6 +219,7 @@ media together for native rendering can opt selected payloads into its
 ```ts
 const outbound: ChannelOutboundAdapter = {
   // ...sendText and sendMedia...
+  deliveryCapabilities: { durableFinal: { payload: true } },
   preferPayloadForMedia: ({ payload, forceDocument }) =>
     forceDocument !== true && canRenderTextAndMediaTogether(payload),
   sendPayload: async (ctx) => await sendNativeCombinedPayload(ctx),
@@ -226,16 +227,20 @@ const outbound: ChannelOutboundAdapter = {
 ```
 
 The hook is a synchronous routing decision and does not send or mutate the
-payload. Return `true` only when `sendPayload` will own every text and media
-part in the original payload. That implementation must preserve attachment
-order, reply/thread behavior, and must explicitly deliver or fall back for
-media it cannot embed. Return `false` to keep core's normal `sendMedia`/`sendText`
-fan-out. Core can still select `sendPayload` for payloads that require durable
-payload transport, independently of this hook.
+payload. Core exposes it only when the selected message/outbound durable-final
+capability map declares `payload: true`; the map must also accurately describe
+every other durable send shape the adapter supports. Return `true` only when
+`sendPayload` will own every text and media part in the original payload. That
+implementation must preserve attachment order, reply/thread behavior, and must
+explicitly deliver or fall back for media it cannot embed. Return `false` to
+keep core's normal `sendMedia`/`sendText` fan-out. Core can still select
+`sendPayload` for payloads that require durable payload transport, independently
+of this hook.
 
 The hook receives `cfg`, `accountId`, and `forceDocument`. Adapters should
-decline the combined route when it cannot preserve a requested document mode.
-Defining the hook without `sendPayload` has no effect.
+decline the combined route when it cannot preserve a requested document, voice,
+or video-note mode. Defining the hook without `sendPayload` or without the
+durable `payload` capability has no effect.
 
 ## Durable sends
 
