@@ -20,9 +20,18 @@ export function normalizeMSTeamsUserInput(raw: string): string {
     .trim();
 }
 
-/** Canonical user principal shared by startup projection, security audit, and ingress. */
-export function normalizeMSTeamsDmPrincipal(raw: string): string {
-  return normalizeMSTeamsUserInput(raw).toLowerCase();
+/** Project static DM principals; only opted-in audits may include resolvable names. */
+export function normalizeMSTeamsDmPrincipal(raw: string, allowNameMatching = false): string {
+  const trimmed = raw.trim();
+  if (trimmed === "*" || /^accessGroup:/i.test(trimmed)) {
+    return trimmed;
+  }
+  // Startup has historically projected conversation-prefixed hexadecimal user IDs.
+  const id = normalizeMSTeamsUserInput(trimmed).toLowerCase();
+  return isStableMSTeamsUserId(id) ||
+    (allowNameMatching && classifyMSTeamsEntryAuthentication(trimmed) === "mutable")
+    ? id
+    : "";
 }
 
 /** Match the stable user-id shape accepted by runtime allowlist projection and targeting. */
@@ -31,7 +40,7 @@ export function isStableMSTeamsUserId(raw: string): boolean {
   if (/^conversation:/i.test(unscoped)) {
     return false;
   }
-  return MSTEAMS_STABLE_USER_ID.test(normalizeMSTeamsDmPrincipal(unscoped));
+  return MSTEAMS_STABLE_USER_ID.test(normalizeMSTeamsUserInput(unscoped));
 }
 
 export function normalizeMSTeamsConversationId(raw: string): string {
@@ -75,7 +84,7 @@ function normalizeMSTeamsIngressUserId(value?: string | null): string | null {
   if (/^conversation:/i.test(unscoped)) {
     return null;
   }
-  return normalizeMSTeamsDmPrincipal(unscoped) || null;
+  return normalizeMSTeamsUserInput(unscoped) || null;
 }
 
 function normalizeSenderNameIngressValue(value?: string | null): string | null {
@@ -137,7 +146,7 @@ export function classifyMSTeamsEntryAuthentication(
   // Audit the startup projection, not a raw inbound identity: legacy typed
   // hexadecimal entries already authorize the projected user. Ingress and
   // approval checks must still reject raw conversation-form identities.
-  if (isStableMSTeamsUserId(normalizeMSTeamsDmPrincipal(raw))) {
+  if (isStableMSTeamsUserId(normalizeMSTeamsUserInput(raw))) {
     return "asserted";
   }
   const normalized = normalizeMSTeamsIngressUserId(raw);
