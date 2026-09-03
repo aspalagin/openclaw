@@ -1,11 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { msteamsPlugin } from "../../extensions/msteams/api.js";
-import type { OpenClawConfig } from "../config/config.js";
-import { collectChannelSecurityFindingsCore } from "./audit-channel.js";
+import { msteamsPlugin } from "../extensions/msteams/api.js";
+import type { ChannelPlugin } from "../src/channels/plugins/types.plugin.js";
+import type { OpenClawConfig } from "../src/config/config.js";
+import { collectChannelSecurityFindingsCore } from "../src/security/audit-channel.js";
 
-vi.mock("../channels/message-access/store-allow-from.js", () => ({
+vi.mock("../src/channels/message-access/store-allow-from.js", () => ({
   readChannelIngressStoreAllowFromForDmPolicy: async () => [],
 }));
+
+const msteamsAuditPlugin: ChannelPlugin = {
+  id: msteamsPlugin.id,
+  meta: msteamsPlugin.meta,
+  capabilities: msteamsPlugin.capabilities,
+  config: msteamsPlugin.config,
+  security: msteamsPlugin.security,
+};
 
 const stableId = "40a1a0ed-4ff2-4164-a219-55518990c197";
 const conversationEntries = [
@@ -72,7 +81,10 @@ describe.each([false, true])("Teams audit (name matching: %s)", (allowNameMatchi
         },
       },
     };
-    const findings = await collectChannelSecurityFindingsCore({ cfg, plugins: [msteamsPlugin] });
+    const findings = await collectChannelSecurityFindingsCore({
+      cfg,
+      plugins: [msteamsAuditPlugin],
+    });
     expect(findings.some((finding) => finding.checkId === "channels.msteams.dm.locked")).toBe(
       locked,
     );
