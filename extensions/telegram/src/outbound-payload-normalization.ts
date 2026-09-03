@@ -1,16 +1,11 @@
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
-import { resolveTelegramInlineButtons, type TelegramInlineButtons } from "./button-types.js";
+import { asOptionalRecord, readStringField } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveTelegramInlineButtons } from "./button-types.js";
 import { resolveTelegramInteractiveTextFallback } from "./interactive-fallback.js";
 
 export function normalizeTelegramMetadataOnlyPayload(payload: ReplyPayload): ReplyPayload | null {
-  const telegramData = payload.channelData?.telegram as
-    | {
-        buttons?: TelegramInlineButtons;
-        quoteText?: string;
-        reaction?: { emoji?: unknown; replyToId?: unknown; replyToCurrent?: unknown };
-      }
-    | undefined;
+  const telegramData = asOptionalRecord(payload.channelData?.telegram);
   const text = resolveTelegramInteractiveTextFallback({
     text: payload.text,
     interactive: payload.interactive,
@@ -32,11 +27,9 @@ export function normalizeTelegramMetadataOnlyPayload(payload: ReplyPayload): Rep
     presentation: payload.presentation,
     interactive: payload.interactive,
   });
-  const hasQuoteText =
-    typeof telegramData?.quoteText === "string" && Boolean(telegramData.quoteText.trim());
-  const hasReaction =
-    typeof telegramData?.reaction?.emoji === "string" &&
-    Boolean(telegramData.reaction.emoji.trim());
+  const hasQuoteText = Boolean(readStringField(telegramData, "quoteText")?.trim());
+  const reaction = asOptionalRecord(telegramData?.reaction);
+  const hasReaction = Boolean(readStringField(reaction, "emoji")?.trim());
   if (hasReaction && !buttons?.length && !hasQuoteText) {
     return payload;
   }
@@ -48,16 +41,16 @@ export function normalizeTelegramMetadataOnlyPayload(payload: ReplyPayload): Rep
 }
 
 function mergeTelegramFallbackPayloads(source: ReplyPayload, adopter: ReplyPayload): ReplyPayload {
-  const sourceTelegram = source.channelData?.telegram as
-    | { buttons?: TelegramInlineButtons; quoteText?: string }
-    | undefined;
-  const adopterTelegram = adopter.channelData?.telegram as
-    | { buttons?: TelegramInlineButtons; quoteText?: string }
-    | undefined;
-  const buttons = [...(sourceTelegram?.buttons ?? []), ...(adopterTelegram?.buttons ?? [])];
-  const quoteText = sourceTelegram?.quoteText?.trim()
-    ? sourceTelegram.quoteText
-    : adopterTelegram?.quoteText;
+  const sourceTelegram = asOptionalRecord(source.channelData?.telegram);
+  const adopterTelegram = asOptionalRecord(adopter.channelData?.telegram);
+  const buttons = [
+    ...(resolveTelegramInlineButtons({ buttons: sourceTelegram?.buttons }) ?? []),
+    ...(resolveTelegramInlineButtons({ buttons: adopterTelegram?.buttons }) ?? []),
+  ];
+  const sourceQuoteText = readStringField(sourceTelegram, "quoteText");
+  const quoteText = sourceQuoteText?.trim()
+    ? sourceQuoteText
+    : readStringField(adopterTelegram, "quoteText");
   const telegram =
     sourceTelegram || adopterTelegram
       ? {
@@ -100,19 +93,14 @@ export function normalizeTelegramFallbackPayloadBatch(
     }
     const channelData = entry.payload.channelData;
     const channelDataKeys = channelData ? Object.keys(channelData) : [];
-    const telegramData = channelData?.telegram as
-      | {
-          buttons?: TelegramInlineButtons;
-          quoteText?: string;
-          reaction?: unknown;
-        }
-      | undefined;
+    const telegramData = asOptionalRecord(channelData?.telegram);
+    const buttons = resolveTelegramInlineButtons({ buttons: telegramData?.buttons });
     if (
       channelDataKeys.length !== 1 ||
       channelDataKeys[0] !== "telegram" ||
-      !telegramData?.buttons?.length ||
-      telegramData.quoteText?.trim() ||
-      telegramData.reaction
+      !buttons?.length ||
+      readStringField(telegramData, "quoteText")?.trim() ||
+      telegramData?.reaction
     ) {
       continue;
     }
