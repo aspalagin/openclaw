@@ -134,6 +134,12 @@ export const msteamsIngressIdentity = {
 export function classifyMSTeamsEntryAuthentication(
   raw: string,
 ): IdentifierAuthentication | undefined {
+  // Audit the startup projection, not a raw inbound identity: legacy typed
+  // hexadecimal entries already authorize the projected user. Ingress and
+  // approval checks must still reject raw conversation-form identities.
+  if (isStableMSTeamsUserId(normalizeMSTeamsDmPrincipal(raw))) {
+    return "asserted";
+  }
   const normalized = normalizeMSTeamsIngressUserId(raw);
   if (
     !normalized ||
@@ -143,5 +149,5 @@ export function classifyMSTeamsEntryAuthentication(
   ) {
     return undefined;
   }
-  return MSTEAMS_STABLE_USER_ID.test(normalized) ? "asserted" : "mutable";
+  return "mutable";
 }
