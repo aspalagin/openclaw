@@ -291,9 +291,9 @@ describe("msteamsPlugin", () => {
         policyPath: "channels.msteams.dmPolicy",
         allowFromPath: "channels.msteams.",
       });
-      expect(result?.normalizeEntry?.(" OWNER ")).toBe("owner");
-      expect(result?.normalizeEntry?.(" msteams:user:OWNER ")).toBe("owner");
-      expect(result?.normalizeEntry?.(" teams:OWNER ")).toBe("owner");
+      expect(result?.normalizeEntry?.(" 0123456789ABCDEF ")).toBe("0123456789abcdef");
+      expect(result?.normalizeEntry?.(" msteams:user:0123456789ABCDEF ")).toBe("0123456789abcdef");
+      expect(result?.normalizeEntry?.(" teams:0123456789ABCDEF ")).toBe("0123456789abcdef");
     }
     expect(msteamsSetupPlugin.security?.resolveDmPolicy).toBe(
       msteamsPlugin.security?.resolveDmPolicy,

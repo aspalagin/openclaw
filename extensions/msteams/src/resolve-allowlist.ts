@@ -89,25 +89,12 @@ function findExactUsers(items: GraphUser[], query: string): GraphUser[] {
   );
 }
 
-function normalizeStaticMSTeamsAllowEntry(raw: string): string | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  if (trimmed === "*" || /^accessGroup:/i.test(trimmed)) {
-    return trimmed;
-  }
-  // Preserve the previous startup projection for typed hexadecimal entries.
-  const id = normalizeMSTeamsDmPrincipal(trimmed);
-  return isStableMSTeamsUserId(id) ? id : undefined;
-}
-
 export function projectStableMSTeamsUserAllowlist(entries?: string[]): string[] | undefined {
   if (!entries) {
     return undefined;
   }
   const projected = entries
-    .map((entry) => normalizeStaticMSTeamsAllowEntry(entry))
+    .map((entry) => normalizeMSTeamsDmPrincipal(entry))
     .filter((entry): entry is string => Boolean(entry));
   return [...new Map(projected.map((entry) => [normalizeExactMatch(entry), entry])).values()];
 }
@@ -118,7 +105,7 @@ export function projectStableMSTeamsGroupAllowlist(entries?: string[]): string[]
   }
   const projected = entries
     .map((entry) => {
-      const stableUserEntry = normalizeStaticMSTeamsAllowEntry(entry);
+      const stableUserEntry = normalizeMSTeamsDmPrincipal(entry);
       if (stableUserEntry) {
         return stableUserEntry;
       }

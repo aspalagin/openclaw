@@ -1,7 +1,7 @@
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-id";
 import { formatAllowFromLowercase } from "openclaw/plugin-sdk/allow-from";
 import {
-  createScopedDmSecurityResolver,
+  buildAccountScopedDmSecurityPolicy,
   createTopLevelChannelConfigAdapter,
 } from "openclaw/plugin-sdk/channel-config-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -80,15 +80,25 @@ export const msteamsConfigAdapter = createTopLevelChannelConfigAdapter<
   formatAllowFrom: (allowFrom) => formatAllowFromLowercase({ allowFrom }),
   resolveDefaultTo: (account) => account.defaultTo,
 });
-export const resolveMSTeamsDmPolicy = createScopedDmSecurityResolver<ResolvedMSTeamsAccount>({
-  channelKey: "msteams",
-  resolvePolicy: () => undefined,
-  resolveAllowFrom: () => undefined,
-  resolveAccess: ({ cfg }) => ({
-    dmPolicy: cfg.channels?.msteams?.dmPolicy,
-    allowFrom: cfg.channels?.msteams?.allowFrom,
-  }),
-  policyPathSuffix: "dmPolicy",
-  normalizeEntry: normalizeMSTeamsDmPrincipal,
-  classifyEntryAuthentication: classifyMSTeamsEntryAuthentication,
-});
+export function resolveMSTeamsDmPolicy({
+  cfg,
+  accountId,
+  account,
+}: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  account: ResolvedMSTeamsAccount;
+}) {
+  const config = cfg.channels?.msteams;
+  return buildAccountScopedDmSecurityPolicy({
+    cfg,
+    channelKey: "msteams",
+    accountId: accountId ?? account.accountId,
+    policy: config?.dmPolicy,
+    allowFrom: config?.allowFrom,
+    policyPathSuffix: "dmPolicy",
+    normalizeEntry: (raw) =>
+      normalizeMSTeamsDmPrincipal(raw, config?.dangerouslyAllowNameMatching === true),
+    classifyEntryAuthentication: classifyMSTeamsEntryAuthentication,
+  });
+}
