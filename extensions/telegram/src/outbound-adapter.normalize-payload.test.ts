@@ -95,11 +95,12 @@ describe("telegramOutbound normalizePayload", () => {
 
   it("merges valid fallback buttons without treating a non-string quote as text", () => {
     const buttons = [[{ text: "Open task", callback_data: "open" }]];
+    const fallbackText = { text: "Summary", replacesPayloadIndex: 0 };
     const payloads = [
       { text: "Summary", channelData: { telegram: { quoteText: 42, effect: "spark" } } },
       {
         text: "Summary",
-        fallbackText: { text: "Summary", replacesPayloadIndex: 0 },
+        fallbackText,
         channelData: { telegram: { buttons, quoteText: false } },
       },
     ];
@@ -112,7 +113,7 @@ describe("telegramOutbound normalizePayload", () => {
     ).toEqual([
       {
         ...payloads[0],
-        fallbackText: payloads[1].fallbackText,
+        fallbackText,
         channelData: { telegram: { buttons, quoteText: 42, effect: "spark" } },
       },
       null,

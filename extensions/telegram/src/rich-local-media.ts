@@ -9,11 +9,11 @@ import { buildOutboundMediaLoadOptions, getImageMetadata, loadWebMedia } from ".
 const MAX_RICH_PHOTO_BYTES = 10 * 1024 * 1024;
 const MAX_TELEGRAM_PHOTO_DIMENSION_SUM = 10_000;
 const MAX_TELEGRAM_PHOTO_ASPECT_RATIO = 20;
-const LOCAL_MEDIA_SOURCE_RE = /^(?:(?:file:\/\/)?\/(?!\/)|[A-Za-z]:[\\/])/u;
+const LOCAL_MEDIA_SOURCE_RE = /^(?:(?:[fF][iI][lL][eE]:\/\/)?\/(?!\/)|[A-Za-z]:[\\/])/u;
 const LOCAL_MEDIA_TAG_RE =
   /<(img|video|audio)\b([^>]*?)\bsrc\s*=\s*(?:(["'])([^"']+)\3|([^\s"'=<>`]+))([^>]*)>/giu;
 const LOCAL_MARKDOWN_IMAGE_RE =
-  /!\[([^\]\n]*)\]\(((?:(?:file:\/\/)?\/(?!\/)|[A-Za-z]:[\\/])[^\s)"]+)(?:\s+"([^"\n]*)")?\)/gu;
+  /!\[([^\]\n]*)\]\(((?:(?:[fF][iI][lL][eE]:\/\/)?\/(?!\/)|[A-Za-z]:[\\/])[^\s)"]+)(?:\s+"([^"\n]*)")?\)/gu;
 
 type RichMediaType = "photo" | "video" | "audio" | "voice_note";
 type RichMediaElementType = Exclude<RichMediaType, "voice_note">;

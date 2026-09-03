@@ -48,7 +48,7 @@ describe("telegramOutbound rich local media", () => {
   });
 
   it("prefers the payload route only for rich text with local media", () => {
-    const payload = { text: "Chart", mediaUrls: ["/workspace/chart.png"] };
+    const payload = { text: "Chart", mediaUrls: ["FILE:///workspace/chart.png"] };
     expect(
       telegramOutbound.preferPayloadForMedia?.({
         payload,
@@ -74,6 +74,12 @@ describe("telegramOutbound rich local media", () => {
         cfg: { channels: { telegram: { richMessages: true } } } as never,
       }),
     ).toBe(true);
+    expect(
+      telegramOutbound.preferPayloadForMedia?.({
+        payload: { text: "Chart", mediaUrls: ["K:/workspace/chart.png"] },
+        cfg: { channels: { telegram: { richMessages: true } } } as never,
+      }),
+    ).toBe(false);
   });
 
   it("keeps explicit voice and video-note requests on the legacy media route", () => {

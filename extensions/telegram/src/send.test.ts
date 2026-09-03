@@ -1535,8 +1535,12 @@ describe("sendMessageTelegram", () => {
     expect(richMessage?.blocks).toMatchObject([{ type: testCase.blockType }]);
   });
 
-  it("uploads a Windows absolute image path into a rich message", async () => {
-    const source = String.raw`C:\workspace\chart.png`;
+  it.each([
+    String.raw`C:\workspace\chart.png`,
+    "file:///workspace/chart.png",
+    "FILE:///workspace/chart.png",
+    "FiLe:///workspace/chart.png",
+  ])("uploads an HTML image source %s into a rich message", async (source) => {
     botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
     loadWebMedia.mockResolvedValueOnce({
       buffer: Buffer.from("local image"),
@@ -1555,8 +1559,12 @@ describe("sendMessageTelegram", () => {
     expect(richMessage?.blocks).toMatchObject([{ type: "photo" }]);
   });
 
-  it("uploads a Windows absolute Markdown image path into a rich message", async () => {
-    const source = String.raw`C:\workspace\chart.png`;
+  it.each([
+    String.raw`C:\workspace\chart.png`,
+    "file:///workspace/chart.png",
+    "FILE:///workspace/chart.png",
+    "FiLe:///workspace/chart.png",
+  ])("uploads a Markdown image source %s into a rich message", async (source) => {
     botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
     loadWebMedia.mockResolvedValueOnce({
       buffer: Buffer.from("local image"),
@@ -1574,6 +1582,27 @@ describe("sendMessageTelegram", () => {
     const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
     expect(richMessage?.blocks).toMatchObject([{ type: "photo" }]);
   });
+
+  it.each(["K:/workspace/chart.png", "ſ:/workspace/chart.png"])(
+    "does not load a non-ASCII drive source %s as local media",
+    async (source) => {
+      botRawApi.sendRichMessage.mockResolvedValueOnce({ message_id: 46, chat: { id: "123" } });
+
+      await sendMessageTelegram(
+        "123",
+        `Keep text\n\n<img src="${source}"/>\n\n![Chart](${source})`,
+        {
+          cfg: { channels: { telegram: { richMessages: true } } },
+          token: "tok",
+          mediaLocalRoots: ["/workspace"],
+        },
+      );
+
+      expect(loadWebMedia).not.toHaveBeenCalled();
+      const richMessage = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message;
+      expect(inputRichBlocksToPlainText(richMessage?.blocks ?? [])).toContain("Keep text");
+    },
+  );
 
   it("uploads an unquoted local HTML image source into a rich message", async () => {
     const source = "/workspace/chart.png";
