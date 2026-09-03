@@ -29,6 +29,9 @@ describe("Teams participant domain", () => {
       `user:${stableId}`,
       `teams:${stableId}`,
       `msteams:user:${stableId}`,
+      `conversation:${stableId}`,
+      ` teams:conversation:${stableId.toUpperCase()} `,
+      `msteams:conversation:${stableId}`,
     ];
     const cfg = {
       channels: {
@@ -51,6 +54,9 @@ describe("Teams participant domain", () => {
 
     expect(projectedAllowFrom).toEqual([stableId]);
     expect([...auditedPrincipals]).toEqual([stableId]);
+    expect(
+      authoredAllowFrom.map((entry) => auditPolicy.classifyEntryAuthentication?.(entry)),
+    ).toEqual(authoredAllowFrom.map(() => "asserted"));
 
     const result = await resolveMSTeamsSenderAccess({
       cfg: {
