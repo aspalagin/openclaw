@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { isPathInside } from "@openclaw/fs-safe/path";
 import { decodeMountInfoPath } from "../packages/normalization-core/src/mountinfo-path.ts";
+import { BUNDLED_PLUGIN_BUILD_ENV_NAMES } from "./lib/bundled-plugin-build-entries.mjs";
 import { BUNDLED_PLUGIN_PATH_PREFIX } from "./lib/bundled-plugin-paths.mjs";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import {
@@ -29,8 +30,10 @@ import {
 } from "./lib/managed-child-process.mts";
 import { parsePositiveInt } from "./lib/numeric-options.mjs";
 import { assertRealOutputRoot } from "./lib/output-root-guard.mjs";
+import { sanitizeBundlerHelperDtsExportTree } from "./lib/sanitize-bundler-helper-dts-exports.mts";
 import {
   TSDOWN_PACKAGE_CONFIG_GROUP,
+  TSDOWN_PLUGIN_SDK_DTS_CONFIG_GROUPS,
   TSDOWN_UNIFIED_CONFIG_GROUP,
   TSDOWN_UNIFIED_DTS_CONFIG_GROUPS,
 } from "./lib/tsdown-config-groups.mts";
@@ -76,9 +79,62 @@ const ROOT_TSDOWN_OUTPUT_ROOTS = ["dist", "dist-runtime"];
 const PRESERVED_TSDOWN_OUTPUT_FILES = ["dist/cli-startup-metadata.json"];
 const PRESERVE_CLI_STARTUP_METADATA_ENV = "OPENCLAW_PRESERVE_CLI_STARTUP_METADATA";
 const GENERATED_SOURCE_DECLARATION_PATHSPEC = ":(glob)extensions/**/*.d.ts";
-const DECLARATION_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts"];
+export const TSDOWN_DECLARATION_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts"];
 const SOURCE_DECLARATION_SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs"];
 const RUN_NODE_SKIP_DTS_BUILD_ENV = "OPENCLAW_RUN_NODE_SKIP_DTS_BUILD";
+
+const TSDOWN_SOURCE_EXTENSIONS = [
+  ".cjs",
+  ".cts",
+  ".js",
+  ".json",
+  ".json5",
+  ".mjs",
+  ".mts",
+  ".sql",
+  ".ts",
+  ".tsx",
+  ".yaml",
+  ".yml",
+];
+
+export const TSDOWN_DECLARATION_TOOL_INPUTS = [
+  "package.json",
+  "pnpm-lock.yaml",
+  "tsconfig.json",
+  "scripts/tsdown-build.mts",
+  "scripts/build-all.mts",
+  "scripts/lib/build-artifact-cache.mts",
+  "scripts/lib/dist-artifact-ownership.mts",
+  "scripts/lib/managed-child-process.mts",
+  "scripts/lib/vitest-resource-ownership.mts",
+  "scripts/lib/direct-run.mjs",
+  "scripts/lib/repo-root.mjs",
+  "scripts/lib/local-check-runtime.mts",
+  "scripts/tsx.mjs",
+  "scripts/lib/tsx-cli-shim.mjs",
+  "scripts/lib/bundled-plugin-build-entries.mjs",
+  "scripts/lib/bundled-plugin-paths.mjs",
+  "scripts/lib/optional-bundled-clusters.mjs",
+  "scripts/lib/plugin-sdk-entries.mts",
+  "scripts/lib/plugin-sdk-entrypoints.json",
+  "scripts/lib/plugin-sdk-private-local-only-subpaths.json",
+  "scripts/lib/plugin-sdk-deprecated-public-subpaths.json",
+  "scripts/lib/plugin-sdk-deprecated-barrel-subpaths.json",
+  "scripts/lib/root-package-bundled-plugin-excludes.mjs",
+  "scripts/lib/tsdown-config-groups.mts",
+  "scripts/lib/tsdown-declaration-boundary.mts",
+  "scripts/lib/tsdown-output-roots.mts",
+];
+export const TSDOWN_PACKAGES_CACHE_INPUT = {
+  path: "packages",
+  extensions: TSDOWN_SOURCE_EXTENSIONS,
+  excludeDirectories: ["dist", "node_modules"],
+};
+export const TSDOWN_UNIFIED_CACHE_ENV = [
+  "OPENCLAW_BUILD_PRIVATE_QA",
+  ...BUNDLED_PLUGIN_BUILD_ENV_NAMES,
+];
 
 type OutputRootParams = {
   cwd?: string;
@@ -215,11 +271,9 @@ export function cleanTsdownOutputRoots(params: OutputRootParams = {}) {
   const rootPaths = assertTsdownCleanOutputRoots({ cwd, fs: fsImpl, pathImpl, roots });
   const protectedDeclarationPaths =
     env[RUN_NODE_SKIP_DTS_BUILD_ENV] === "1"
-      ? listExistingDeclarationOutputPaths(cwd, fsImpl, roots)
+      ? listExistingGeneratedDeclarationOutputPaths(cwd, fsImpl, roots)
       : new Set<string>();
   const protectedPaths = new Set([
-    // Vite owns and cleans this subtree; runtime-only builds cannot recreate it.
-    path.resolve(cwd, "dist/control-ui"),
     ...protectedDeclarationPaths,
     ...listExistingPreservedOutputPaths(cwd, env, fsImpl),
   ]);
@@ -273,7 +327,11 @@ function cleanOutputRootExcept(rootPath: string, protectedPaths: Set<string>, fs
   }
 }
 
-function listExistingDeclarationOutputPaths(cwd: string, fsImpl: typeof fs, roots: string[]) {
+function listExistingGeneratedDeclarationOutputPaths(
+  cwd: string,
+  fsImpl: typeof fs,
+  roots: string[],
+) {
   const protectedPaths = new Set<string>();
   for (const root of roots) {
     collectDeclarationOutputPaths(path.resolve(cwd, root), protectedPaths, fsImpl);
@@ -282,7 +340,8 @@ function listExistingDeclarationOutputPaths(cwd: string, fsImpl: typeof fs, root
 }
 
 function listExistingPreservedOutputPaths(cwd: string, env: NodeJS.ProcessEnv, fsImpl: typeof fs) {
-  const protectedPaths = new Set<string>();
+  // Vite owns and cleans this subtree; tsdown cannot recreate its assets.
+  const protectedPaths = new Set([path.resolve(cwd, "dist/control-ui")]);
   // Mac packaging owns replacement of signed bundles. Rebuilding its JS must
   // leave the previous app (including its private runtime) usable on failure.
   const pendingDirectories = [path.join(cwd, "dist")];
@@ -319,6 +378,26 @@ function listExistingPreservedOutputPaths(cwd: string, env: NodeJS.ProcessEnv, f
   return protectedPaths;
 }
 
+/** Publish generated declarations without claiming runtime assets or protected subtrees. */
+export function listReplaceableTsdownDeclarationOutputs(params: OutputRootParams = {}) {
+  const cwd = path.resolve(params.cwd ?? process.cwd());
+  const fsImpl = params.fs ?? fs;
+  const roots = params.roots ?? listTsdownOutputRoots();
+  assertTsdownCleanOutputRoots({ ...params, cwd, fs: fsImpl, roots });
+  const protectedPaths = [
+    ...listExistingPreservedOutputPaths(cwd, params.env ?? process.env, fsImpl),
+  ];
+  return [...listExistingGeneratedDeclarationOutputPaths(cwd, fsImpl, roots)]
+    .filter(
+      (file) =>
+        !protectedPaths.some(
+          (protectedPath) =>
+            file === protectedPath || file.startsWith(`${protectedPath}${path.sep}`),
+        ),
+    )
+    .toSorted();
+}
+
 function collectDeclarationOutputPaths(
   rootPath: string,
   protectedPaths: Set<string>,
@@ -335,7 +414,7 @@ function collectDeclarationOutputPaths(
     const entryPath = path.join(rootPath, entry.name);
     if (entry.isDirectory()) {
       collectDeclarationOutputPaths(entryPath, protectedPaths, fsImpl);
-    } else if (DECLARATION_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
+    } else if (TSDOWN_DECLARATION_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
       protectedPaths.add(path.resolve(entryPath));
     }
   }
@@ -474,6 +553,14 @@ export function resolveTsdownCleanOutputRoots(args: string[] = []) {
     return [aiRoot, ...selectedMainRoots];
   }
   return listTsdownOutputRoots();
+}
+
+export function sanitizeTsdownBuildOutputRoots(args: string[] = [], cwd = process.cwd()): void {
+  const roots = resolveTsdownCleanOutputRoots(args);
+  const rootPaths = assertTsdownCleanOutputRoots({ cwd, roots });
+  for (const rootPath of rootPaths) {
+    sanitizeBundlerHelperDtsExportTree(rootPath);
+  }
 }
 
 function wrapperOwnsTsdownCleanup(args: string[]) {
@@ -862,7 +949,7 @@ function resolveCgroupMemoryLimitPaths(params: MemoryLimitParams = {}) {
 function readCgroupMemoryLimitBytes(params: MemoryLimitParams = {}) {
   const configuredLimit = params.cgroupMemoryLimitBytes;
   if (configuredLimit !== undefined && Number.isFinite(configuredLimit) && configuredLimit >= 0) {
-    return { limitBytes: Math.trunc(configuredLimit), unresolved: false };
+    return { limitBytes: Math.trunc(configuredLimit), unresolved: false, usageKnown: false };
   }
 
   const fsImpl = params.fs ?? fs;
@@ -906,6 +993,7 @@ function readCgroupMemoryLimitBytes(params: MemoryLimitParams = {}) {
   let readV1HardLimit = false;
   let sawDisabledV2MemoryController = false;
   let sawUnreadableControllerFile = false;
+  let usageKnown = true;
   for (const limitPath of resolvedPaths.paths) {
     try {
       const rawLimit = fsImpl.readFileSync(limitPath, "utf8");
@@ -930,6 +1018,7 @@ function readCgroupMemoryLimitBytes(params: MemoryLimitParams = {}) {
             "utf8",
           ),
         );
+        usageKnown &&= usageBytes !== null;
         if (usageBytes !== null) {
           let inactiveFileBytes = 0;
           try {
@@ -952,7 +1041,8 @@ function readCgroupMemoryLimitBytes(params: MemoryLimitParams = {}) {
           availableBytes = Math.max(0, limitBytes - competingBytes);
         }
       } catch {
-        // Older or synthetic cgroup views may not expose current usage; the limit remains a cap.
+        // Keep the serial heap cap, but an unobserved shared budget cannot admit overlap.
+        usageKnown = false;
       }
       if (tightestLimitBytes === null || availableBytes < tightestLimitBytes) {
         tightestLimitBytes = availableBytes;
@@ -980,6 +1070,7 @@ function readCgroupMemoryLimitBytes(params: MemoryLimitParams = {}) {
 
   return {
     limitBytes: tightestLimitBytes,
+    usageKnown,
     unresolved:
       resolvedPaths.cgroupRecordReadFailed ||
       sawUnreadableControllerFile ||
@@ -1050,6 +1141,24 @@ function readHostAvailableMemoryBytes(params: MemoryLimitParams) {
   return null;
 }
 
+function readTsdownMemoryCapacity(params: MemoryLimitParams) {
+  const cgroupMemory = readCgroupMemoryLimitBytes(params);
+  if (cgroupMemory.unresolved) {
+    return { ...cgroupMemory, limitBytes: null, availableBytes: null };
+  }
+  const physicalTotalBytes = readProcMemTotalBytes(params) ?? readPhysicalMemoryTotalBytes(params);
+  const hostAvailableBytes = readHostAvailableMemoryBytes(params);
+  const physicalLimitBytes =
+    hostAvailableBytes === null || physicalTotalBytes === null
+      ? (hostAvailableBytes ?? physicalTotalBytes)
+      : Math.min(hostAvailableBytes, physicalTotalBytes);
+  const limitBytes =
+    cgroupMemory.limitBytes === null || physicalLimitBytes === null
+      ? (cgroupMemory.limitBytes ?? physicalLimitBytes)
+      : Math.min(cgroupMemory.limitBytes, physicalLimitBytes);
+  return { ...cgroupMemory, limitBytes, availableBytes: hostAvailableBytes };
+}
+
 function resolveTsdownMemoryBudget(params: ResolvedMemoryLimitParams = {}) {
   if (params.resolvedMaxOldSpaceMb !== undefined) {
     return { maxOldSpaceMb: params.resolvedMaxOldSpaceMb, unresolvedCgroupMemory: false };
@@ -1065,21 +1174,10 @@ function resolveTsdownMemoryBudget(params: ResolvedMemoryLimitParams = {}) {
   if (envOverride !== null) {
     return { maxOldSpaceMb: envOverride, unresolvedCgroupMemory: false };
   }
-
-  const cgroupMemory = readCgroupMemoryLimitBytes(params);
-  if (cgroupMemory.unresolved) {
+  const { limitBytes, unresolved } = readTsdownMemoryCapacity(params);
+  if (unresolved) {
     return { maxOldSpaceMb: 1, unresolvedCgroupMemory: true };
   }
-  const physicalTotalBytes = readProcMemTotalBytes(params) ?? readPhysicalMemoryTotalBytes(params);
-  const hostAvailableBytes = readHostAvailableMemoryBytes(params);
-  const physicalLimitBytes =
-    hostAvailableBytes === null || physicalTotalBytes === null
-      ? (hostAvailableBytes ?? physicalTotalBytes)
-      : Math.min(hostAvailableBytes, physicalTotalBytes);
-  const limitBytes =
-    cgroupMemory.limitBytes === null || physicalLimitBytes === null
-      ? (cgroupMemory.limitBytes ?? physicalLimitBytes)
-      : Math.min(cgroupMemory.limitBytes, physicalLimitBytes);
   if (limitBytes === null) {
     return { maxOldSpaceMb: defaultMaxOldSpaceMb, unresolvedCgroupMemory: false };
   }
@@ -1092,6 +1190,36 @@ function resolveTsdownMemoryBudget(params: ResolvedMemoryLimitParams = {}) {
     maxOldSpaceMb: Math.min(defaultMaxOldSpaceMb, cgroupCap),
     unresolvedCgroupMemory: false,
   };
+}
+
+/** Only independently staged SDK misses may share an unchanged aggregate heap budget. */
+export function resolveStagedSdkDeclarationConcurrency(
+  groups: readonly { name: string; maxOldSpaceMb: number }[],
+  params: MemoryLimitParams & { availableParallelism?: number } = {},
+): 1 | 2 {
+  if (
+    groups.length !== 2 ||
+    !TSDOWN_PLUGIN_SDK_DTS_CONFIG_GROUPS.every((name) =>
+      groups.some((group) => group.name === name),
+    ) ||
+    (params.availableParallelism ?? os.availableParallelism()) < 2
+  ) {
+    return 1;
+  }
+  // Frozen or explicit per-child heaps do not establish available batch capacity.
+  // Unknown available memory stays serial; retain native headroom for each child.
+  const capacity = readTsdownMemoryCapacity(params);
+  const requiredBytes = groups.reduce(
+    (sum, group) => sum + (group.maxOldSpaceMb + TSDOWN_CGROUP_MEMORY_HEADROOM_MB) * 1024 * 1024,
+    0,
+  );
+  return !capacity.unresolved &&
+    capacity.usageKnown &&
+    capacity.availableBytes !== null &&
+    capacity.limitBytes !== null &&
+    capacity.limitBytes >= requiredBytes
+    ? 2
+    : 1;
 }
 
 const resolveTsdownMaxOldSpaceMb = (params: ResolvedMemoryLimitParams = {}) =>
@@ -1365,7 +1493,7 @@ function resolveSerializedMainConfigGroups(filters: string[]) {
   ) {
     return null;
   }
-  if (filters.includes(TSDOWN_UNIFIED_CONFIG_GROUP)) {
+  if (filters.includes(TSDOWN_UNIFIED_CONFIG_GROUP) && !filters.some(isUnifiedDtsGroup)) {
     return filters.includes(TSDOWN_PACKAGE_CONFIG_GROUP)
       ? SERIALIZED_MAIN_CONFIG_GROUPS
       : SERIALIZED_MAIN_CONFIG_GROUPS.slice(1);
@@ -1745,36 +1873,19 @@ export async function runTsdownBuildInvocation(
   });
 }
 
-/** Execute CLI and staged declaration plans with the same diagnostics and deadlines. */
-export async function executeTsdownBuildPlan(
-  plan: NonNullable<ReturnType<typeof prepareTsdownBuildExecution>>,
-) {
-  let result: TsdownBuildResult | undefined;
-  for (const [index, invocation] of plan.invocations.entries()) {
-    const startedAt = performance.now();
-    result = await runTsdownBuildInvocation(invocation);
-    if (result.error) {
-      throw result.error;
-    }
-    // Per-invocation timing separates the AI-declarations pass from the main
-    // graph in CI logs; the combined step is otherwise a single opaque cost.
-    console.log(
-      `[tsdown-build] invocation ${index + 1}/${plan.invocations.length} finished in ${((performance.now() - startedAt) / 1000).toFixed(1)}s`,
-    );
-    if (
-      result.timedOut ||
-      result.status !== 0 ||
-      result.hasIneffectiveDynamicImport ||
-      result.fatalUnresolvedImport
-    ) {
-      break;
-    }
+async function executeTsdownInvocation(
+  invocation: TsdownBuildInvocation,
+  index: number,
+  count: number,
+): Promise<number> {
+  const startedAt = performance.now();
+  const result = await runTsdownBuildInvocation(invocation);
+  if (result.error) {
+    throw result.error;
   }
-
-  if (!result) {
-    return 1;
-  }
-
+  console.log(
+    `[tsdown-build] invocation ${index + 1}/${count} finished in ${((performance.now() - startedAt) / 1000).toFixed(1)}s`,
+  );
   if (result.status === 0 && result.hasIneffectiveDynamicImport) {
     console.error(
       "Build emitted [INEFFECTIVE_DYNAMIC_IMPORT]. Replace transparent runtime re-export facades with real runtime boundaries.",
@@ -1800,28 +1911,93 @@ export async function executeTsdownBuildPlan(
   return 1;
 }
 
-export async function runTsdownBuild(argv: string[] = process.argv.slice(2)): Promise<number> {
+/** Execute CLI and staged declaration plans with the same diagnostics and deadlines. */
+export async function executeTsdownBuildPlan(
+  plan: NonNullable<ReturnType<typeof prepareTsdownBuildExecution>>,
+  concurrency: 1 | 2 = 1,
+) {
+  let next = 0;
+  let exitCode = plan.invocations.length ? 0 : 1;
+  const failedExits: { index: number; code: number }[] = [];
+  const run = async () => {
+    while (exitCode === 0 && next < plan.invocations.length) {
+      const index = next++;
+      try {
+        const code = await executeTsdownInvocation(
+          plan.invocations[index]!,
+          index,
+          plan.invocations.length,
+        );
+        if (code !== 0) {
+          failedExits.push({ index, code });
+          exitCode ||= code;
+        }
+      } catch (error) {
+        exitCode ||= 1;
+        throw error;
+      }
+    }
+  };
+  // A failed sibling stops admission, not the lifetime of an already admitted compiler.
+  // Join every result before the writer may seal, publish, or release its private stages.
+  const results = await Promise.allSettled(
+    Array.from({ length: Math.min(concurrency, plan.invocations.length) }, run),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length || failedExits.length > 1) {
+    failures.push(
+      ...failedExits.map(({ index, code }) =>
+        Object.assign(new Error(`tsdown invocation ${index + 1} failed with exit ${code}`), {
+          exitCode: code,
+        }),
+      ),
+    );
+    throw failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "tsdown compiler batch failed");
+  }
+  return exitCode;
+}
+
+export async function runTsdownBuild(
+  argv: string[] = process.argv.slice(2),
+  options: {
+    cwd?: string;
+    executeBuild?: (forwardedArgs: string[]) => Promise<number>;
+  } = {},
+): Promise<number> {
   const args = parseTsdownBuildArgs(argv);
   if (args.help) {
     console.log(tsdownBuildUsage());
     return 0;
   }
-  const plan = prepareTsdownBuildExecution(
-    { args: args.forwardedArgs },
-    {
-      reportShortfall(shortfall) {
-        if (shortfall.fatal) {
-          console.error(shortfall.message);
-        } else {
-          console.warn(shortfall.message);
-        }
+  let code: number;
+  if (options.executeBuild) {
+    code = await options.executeBuild(args.forwardedArgs);
+  } else {
+    const plan = prepareTsdownBuildExecution(
+      { args: args.forwardedArgs },
+      {
+        reportShortfall(shortfall) {
+          if (shortfall.fatal) {
+            console.error(shortfall.message);
+          } else {
+            console.warn(shortfall.message);
+          }
+        },
       },
-    },
-  );
-  if (!plan) {
-    return 1;
+    );
+    if (!plan) {
+      return 1;
+    }
+    code = await executeTsdownBuildPlan(plan);
   }
-  return executeTsdownBuildPlan(plan);
+  if (code === 0) {
+    sanitizeTsdownBuildOutputRoots(args.forwardedArgs, options.cwd);
+  }
+  return code;
 }
 
 if (isDirectRunUrl(process.argv[1], import.meta.url)) {

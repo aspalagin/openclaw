@@ -11,13 +11,12 @@ import {
   type CurrentTranscriptProjection,
 } from "./session-accessor.sqlite-active-projection.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
-import { readTranscriptProjectionGeneration } from "./session-accessor.sqlite-reset-window.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 
 export function readTranscriptDisplaySource(
   projection: CurrentTranscriptProjection,
 ): string | undefined {
-  const generation = readTranscriptProjectionGeneration(projection);
+  const generation = projection.generation;
   return generation
     ? createTranscriptDisplaySource([
         "sqlite",

@@ -5,12 +5,14 @@ import {
   type SessionCreatedActor,
 } from "../../config/sessions/session-entry-provenance.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import { markPluginRegistryActive } from "../../plugins/registry-lifecycle.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
 import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import {
   listSessionCatalogEntries,
   type SessionCatalogProvider,
 } from "../../plugins/session-catalog.js";
+import * as userProfileList from "../../state/user-profile-list.js";
 import * as userProfiles from "../../state/user-profiles.js";
 import { createSessionCatalogRequestEntrySnapshot } from "./session-catalog-entry-snapshot.js";
 
@@ -83,7 +85,62 @@ describe("session catalog entry snapshots", () => {
 
   beforeEach(() => {
     hoisted.activeRegistry = createEmptyPluginRegistry() as TestPluginRegistry;
+    markPluginRegistryActive(hoisted.activeRegistry as PluginRegistry);
     hoisted.listSessionEntriesReadOnly.mockReset();
+  });
+
+  it("resolves catalog senders against current profiles without attributing unknown turns", async () => {
+    vi.spyOn(userProfiles, "hasMultipleSessionSharingIdentities").mockReturnValue(false);
+    vi.spyOn(userProfileList, "getUserProfileDisplay").mockImplementation((id) => {
+      if (id !== "merged-profile") {
+        throw new Error("unknown profile");
+      }
+      return { id: "current-profile", displayName: "Taylor", avatarRevision: "2", hasAvatar: true };
+    });
+    const items = [
+      { type: "userMessage" as const, text: "Unknown author" },
+      {
+        type: "userMessage" as const,
+        text: "Known author",
+        sender: { identity: { type: "profile" as const, id: "merged-profile" }, label: "Stale" },
+      },
+      {
+        type: "userMessage" as const,
+        text: "Deleted author",
+        sender: { identity: { type: "profile" as const, id: "deleted-profile" } },
+      },
+    ];
+    const catalog = provider("external", "unused");
+    catalog.read = async ({ hostId, threadId }) => ({
+      hostId,
+      threadId,
+      items,
+      nextCursor: "older",
+    });
+    hoisted.activeRegistry.sessionCatalogs = [{ provider: catalog }];
+    const respond = vi.fn();
+    await sessionCatalogHandlers["sessions.catalog.read"]?.({
+      params: { catalogId: "external", hostId: "gateway", threadId: "shared" },
+      respond,
+      context: { getRuntimeConfig: () => ({}) },
+    } as never);
+    expect(respond).toHaveBeenCalledWith(true, {
+      hostId: "gateway",
+      threadId: "shared",
+      nextCursor: "older",
+      items: [
+        items[0],
+        {
+          ...items[1],
+          sender: {
+            identity: { type: "profile", id: "current-profile" },
+            label: "Taylor",
+            avatarUrl: "/api/users/current-profile/avatar?v=2",
+          },
+        },
+        items[2],
+      ],
+    });
   });
 
   it.each([
@@ -122,7 +179,7 @@ describe("session catalog entry snapshots", () => {
 
   it("shares resolved and missing human profiles across hosts without retaining them across requests", () => {
     let label = "Before rename";
-    const display = vi.spyOn(userProfiles, "getUserProfileDisplay").mockImplementation((id) => {
+    const display = vi.spyOn(userProfileList, "getUserProfileDisplay").mockImplementation((id) => {
       if (id !== "person") {
         throw new Error("Missing fixture profile");
       }
@@ -298,7 +355,7 @@ describe("session catalog entry snapshots", () => {
   });
 
   it("projects inherited profile creators from stored provenance, not provider metadata", () => {
-    const display = vi.spyOn(userProfiles, "getUserProfileDisplay").mockReturnValue({
+    const display = vi.spyOn(userProfileList, "getUserProfileDisplay").mockReturnValue({
       id: "current",
       displayName: "Current",
       avatarRevision: "1",

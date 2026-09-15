@@ -58,52 +58,16 @@ function parseStorageKind(raw: string): StorageKind | null {
   return null;
 }
 
-/** Parse an optional storage mutation request from a route body. */
-function parseStorageMutationRequest(
-  kindParam: unknown,
-  body: Record<string, unknown>,
-): { kind: StorageKind | null; targetId: string | undefined } {
-  return {
-    kind: parseStorageKind(toStringOrEmpty(kindParam)),
-    targetId: resolveTargetIdFromBody(body),
-  };
-}
-
-/** Parse a required storage mutation request and throw on invalid input. */
-function parseRequiredStorageMutationRequest(
-  kindParam: unknown,
-  body: Record<string, unknown>,
-): { kind: StorageKind; targetId: string | undefined } | null {
-  const parsed = parseStorageMutationRequest(kindParam, body);
-  if (!parsed.kind) {
-    return null;
-  }
-  return {
-    kind: parsed.kind,
-    targetId: parsed.targetId,
-  };
-}
-
-function parseStorageMutationOrRespond(
-  res: BrowserResponse,
-  kindParam: unknown,
-  body: Record<string, unknown>,
-) {
-  const parsed = parseRequiredStorageMutationRequest(kindParam, body);
-  if (!parsed) {
+/** Parse storage mutations once at the request boundary. */
+function parseStorageMutationFromRequest(req: BrowserRequest, res: BrowserResponse) {
+  const body = readBody(req);
+  const kind = parseStorageKind(toStringOrEmpty(req.params.kind));
+  const targetId = resolveTargetIdFromBody(body);
+  if (!kind) {
     jsonError(res, 400, "kind must be local|session");
     return null;
   }
-  return parsed;
-}
-
-function parseStorageMutationFromRequest(req: BrowserRequest, res: BrowserResponse) {
-  const body = readBody(req);
-  const parsed = parseStorageMutationOrRespond(res, req.params.kind, body);
-  if (!parsed) {
-    return null;
-  }
-  return { body, parsed };
+  return { body, parsed: { kind, targetId } };
 }
 
 function assertRange(
@@ -256,13 +220,20 @@ export function registerBrowserAgentStorageRoutes(
       return jsonError(res, 400, formatErrorMessage(err));
     }
 
-    await runMutation(req, res, targetId, "cookies set", async ({ cdpUrl, tab, pw }) => {
-      await pw.cookiesSetViaPlaywright({
-        cdpUrl,
-        targetId: tab.targetId,
-        cookie: parsedCookie,
-      });
-    });
+    await runMutation(
+      req,
+      res,
+      targetId,
+      "cookies set",
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
+        await pw.cookiesSetViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
+          cdpUrl,
+          targetId: tab.targetId,
+          cookie: parsedCookie,
+        });
+      },
+    );
   });
 
   app.post("/cookies/set-many", async (req, res) => {
@@ -291,8 +262,9 @@ export function registerBrowserAgentStorageRoutes(
       res,
       targetId,
       "cookies set-many",
-      async ({ cdpUrl, tab, pw, signal }) => {
+      async ({ cdpUrl, tab, assertCurrent, pw, signal }) => {
         const { added } = await pw.cookiesSetManyViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
           cdpUrl,
           targetId: tab.targetId,
           cookies,
@@ -307,12 +279,19 @@ export function registerBrowserAgentStorageRoutes(
     const body = readBody(req);
     const targetId = resolveTargetIdFromBody(body);
 
-    await runMutation(req, res, targetId, "cookies clear", async ({ cdpUrl, tab, pw }) => {
-      await pw.cookiesClearViaPlaywright({
-        cdpUrl,
-        targetId: tab.targetId,
-      });
-    });
+    await runMutation(
+      req,
+      res,
+      targetId,
+      "cookies clear",
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
+        await pw.cookiesClearViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
+          cdpUrl,
+          targetId: tab.targetId,
+        });
+      },
+    );
   });
 
   app.get("/storage/:kind", async (req, res) => {
@@ -359,8 +338,9 @@ export function registerBrowserAgentStorageRoutes(
       res,
       mutation.parsed.targetId,
       "storage set",
-      async ({ cdpUrl, tab, pw }) => {
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
         await pw.storageSetViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
           cdpUrl,
           targetId: tab.targetId,
           kind: mutation.parsed.kind,
@@ -382,8 +362,9 @@ export function registerBrowserAgentStorageRoutes(
       res,
       mutation.parsed.targetId,
       "storage clear",
-      async ({ cdpUrl, tab, pw }) => {
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
         await pw.storageClearViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
           cdpUrl,
           targetId: tab.targetId,
           kind: mutation.parsed.kind,
@@ -400,8 +381,9 @@ export function registerBrowserAgentStorageRoutes(
       return jsonError(res, 400, "offline is required");
     }
 
-    await runMutation(req, res, targetId, "offline", async ({ cdpUrl, tab, pw }) => {
+    await runMutation(req, res, targetId, "offline", async ({ cdpUrl, tab, assertCurrent, pw }) => {
       await pw.setOfflineViaPlaywright({
+        ...(assertCurrent ? { assertCurrent } : {}),
         cdpUrl,
         targetId: tab.targetId,
         offline,
@@ -427,8 +409,9 @@ export function registerBrowserAgentStorageRoutes(
       }
     }
 
-    await runMutation(req, res, targetId, "headers", async ({ cdpUrl, tab, pw }) => {
+    await runMutation(req, res, targetId, "headers", async ({ cdpUrl, tab, assertCurrent, pw }) => {
       await pw.setExtraHTTPHeadersViaPlaywright({
+        ...(assertCurrent ? { assertCurrent } : {}),
         cdpUrl,
         targetId: tab.targetId,
         headers: parsed,
@@ -443,15 +426,22 @@ export function registerBrowserAgentStorageRoutes(
     const username = toStringOrEmpty(body.username) || undefined;
     const password = readStringValue(body.password);
 
-    await runMutation(req, res, targetId, "http credentials", async ({ cdpUrl, tab, pw }) => {
-      await pw.setHttpCredentialsViaPlaywright({
-        cdpUrl,
-        targetId: tab.targetId,
-        username,
-        password,
-        clear,
-      });
-    });
+    await runMutation(
+      req,
+      res,
+      targetId,
+      "http credentials",
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
+        await pw.setHttpCredentialsViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
+          cdpUrl,
+          targetId: tab.targetId,
+          username,
+          password,
+          clear,
+        });
+      },
+    );
   });
 
   app.post("/set/geolocation", async (req, res) => {
@@ -464,13 +454,20 @@ export function registerBrowserAgentStorageRoutes(
       return jsonError(res, 400, formatErrorMessage(err));
     }
 
-    await runMutation(req, res, targetId, "geolocation", async ({ cdpUrl, tab, pw }) => {
-      await pw.setGeolocationViaPlaywright({
-        cdpUrl,
-        targetId: tab.targetId,
-        ...geolocation,
-      });
-    });
+    await runMutation(
+      req,
+      res,
+      targetId,
+      "geolocation",
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
+        await pw.setGeolocationViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
+          cdpUrl,
+          targetId: tab.targetId,
+          ...geolocation,
+        });
+      },
+    );
   });
 
   app.post("/set/media", async (req, res) => {
@@ -492,8 +489,13 @@ export function registerBrowserAgentStorageRoutes(
       res,
       targetId,
       "media emulation",
-      async ({ cdpUrl, tab, pw }) => {
-        await pw.emulateMediaViaPlaywright({ cdpUrl, targetId: tab.targetId, colorScheme });
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
+        await pw.emulateMediaViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
+          cdpUrl,
+          targetId: tab.targetId,
+          colorScheme,
+        });
       },
       EXISTING_SESSION_LIMITS.emulation,
     );
@@ -512,8 +514,9 @@ export function registerBrowserAgentStorageRoutes(
       res,
       targetId,
       "timezone",
-      async ({ cdpUrl, tab, pw }) => {
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
         await pw.setTimezoneViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
           cdpUrl,
           targetId: tab.targetId,
           timezoneId,
@@ -536,8 +539,9 @@ export function registerBrowserAgentStorageRoutes(
       res,
       targetId,
       "locale",
-      async ({ cdpUrl, tab, pw }) => {
+      async ({ cdpUrl, tab, assertCurrent, pw }) => {
         await pw.setLocaleViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
           cdpUrl,
           targetId: tab.targetId,
           locale,
@@ -560,8 +564,9 @@ export function registerBrowserAgentStorageRoutes(
       res,
       targetId,
       "device emulation",
-      async ({ cdpUrl, tab, pw, signal }) => {
+      async ({ cdpUrl, tab, assertCurrent, pw, signal }) => {
         await pw.setDeviceViaPlaywright({
+          ...(assertCurrent ? { assertCurrent } : {}),
           cdpUrl,
           targetId: tab.targetId,
           name,

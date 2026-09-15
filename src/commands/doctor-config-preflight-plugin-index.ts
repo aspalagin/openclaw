@@ -1,10 +1,15 @@
+import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import {
   readConfigFileSnapshot,
   readConfigFileSnapshotWithPluginMetadata,
   type ConfigSnapshotReadMeasure,
 } from "../config/io.js";
 import type { ConfigFileSnapshot } from "../config/types.js";
+import { isTruthyEnvValue } from "../infra/env.js";
 import type { StartupMigrationLease } from "../infra/startup-migration-checkpoint.js";
+import type { MigrationMessages } from "../infra/state-migrations.types.js";
+import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
+import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-records.js";
 import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
@@ -23,10 +28,77 @@ export type DoctorConfigPreflightPluginSnapshotRead = {
 
 type MeasurePreflightStep = <T>(name: string, run: () => T | Promise<T>) => Promise<T>;
 
-function throwPluginRegistryPersistenceFailed(reason: string): never {
+/** Returns true during updater-managed config rewrites where plugin validation may be stale. */
+export function shouldSkipPluginValidationForDoctorConfigPreflight(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return isTruthyEnvValue(env.OPENCLAW_UPDATE_IN_PROGRESS);
+}
+
+/** One preflight owns completion; each read still checks the current update phase. */
+export function createDoctorRehearsalSnapshotPreparation(
+  report: (result: MigrationMessages) => void,
+): (enabled: boolean) => ((snapshot: ConfigFileSnapshot) => Promise<void>) | undefined {
+  let completed = false;
+  const prepareSnapshot = async (snapshot: ConfigFileSnapshot) => {
+    if (completed) {
+      return;
+    }
+    const { completeUpdateCandidatePluginRehearsal } =
+      await import("../infra/update-candidate-plugin-repair.js");
+    const result = await completeUpdateCandidatePluginRehearsal({
+      config: snapshot.sourceConfig ?? snapshot.config ?? {},
+      env: process.env,
+      installRecords: loadInstalledPluginIndexInstallRecordsSync({ env: process.env }),
+    });
+    completed = true;
+    report({
+      changes:
+        result.copiedFiles > 0
+          ? [`Update rehearsal: copied ${result.copiedFiles} missing plugin dependency files.`]
+          : [],
+      warnings: result.warnings,
+    });
+  };
+  return (enabled) =>
+    enabled &&
+    resolveUpdateRehearsalRoot(process.env) &&
+    process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1"
+      ? prepareSnapshot
+      : undefined;
+}
+
+function throwPluginRegistryPersistenceFailed(
+  reason: string,
+  repair = 'Run "openclaw doctor --fix" and retry.',
+): never {
   throw new Error(
-    `OpenClaw refreshed the plugin registry but could not verify the persisted replacement (${reason}); refusing to write the migration checkpoint. Run "openclaw doctor --fix" and retry.`,
+    `OpenClaw refreshed the plugin registry but could not verify the persisted replacement (${reason}); refusing to write the migration checkpoint. ${repair}`,
   );
+}
+
+function formatPluginRegistryDifferences(
+  snapshot: PluginMetadataSnapshot | undefined,
+): string | undefined {
+  const differences = new Map(
+    snapshot?.registryDiagnostics
+      .flatMap((diagnostic) => diagnostic.differences ?? [])
+      .map((difference) => [JSON.stringify(difference), difference] as const),
+  );
+  if (differences.size === 0) {
+    return undefined;
+  }
+  return [...differences.values()]
+    .toSorted((left, right) =>
+      [left.pluginId, left.persistedSource, left.derivedSource]
+        .join("\0")
+        .localeCompare([right.pluginId, right.persistedSource, right.derivedSource].join("\0")),
+    )
+    .map(
+      (difference) =>
+        `${sanitizeTerminalText(difference.pluginId)} (${difference.changed.join("+")} changed; persisted source: ${JSON.stringify(difference.persistedSource)}; derived source: ${JSON.stringify(difference.derivedSource)})`,
+    )
+    .join(", ");
 }
 
 export async function readDoctorConfigPreflightSnapshot(params: {
@@ -36,6 +108,8 @@ export async function readDoctorConfigPreflightSnapshot(params: {
   observe?: boolean;
   preparePluginMetadataSnapshot: boolean;
   skipPluginValidation: boolean;
+  /** Complete a private update snapshot before Doctor contract modules are inspected. */
+  prepareSnapshot?: (snapshot: ConfigFileSnapshot) => Promise<void>;
 }): Promise<DoctorConfigPreflightPluginSnapshotRead> {
   // Explicit management rereads cross a lease or mutation boundary. A resolver's
   // allowCurrent:false still reuses facts within an existing operation generation.
@@ -60,13 +134,13 @@ export async function readDoctorConfigPreflightSnapshot(params: {
         ...(pluginMetadataSnapshot ? { pluginMetadataSnapshot } : {}),
       };
     }
+    const snapshot = await readConfigFileSnapshot({
+      ...sharedOptions,
+      skipPluginValidation: params.skipPluginValidation,
+    });
+    await params.prepareSnapshot?.(snapshot);
     return {
-      snapshot: addDoctorLegacyIssues(
-        await readConfigFileSnapshot({
-          ...sharedOptions,
-          skipPluginValidation: params.skipPluginValidation,
-        }),
-      ),
+      snapshot: addDoctorLegacyIssues(snapshot),
       pluginMigrationFingerprint: null,
     };
   });
@@ -113,10 +187,12 @@ export async function persistRefreshedPluginIndex(params: {
     const diagnosticCodes = persistedPluginMetadataSnapshot?.registryDiagnostics.map(
       (diagnostic) => diagnostic.code,
     );
+    const differences = formatPluginRegistryDifferences(persistedPluginMetadataSnapshot);
     throwPluginRegistryPersistenceFailed(
       `reread source was ${persistedPluginMetadataSnapshot?.registrySource ?? "missing"}${
-        diagnosticCodes?.length ? `; diagnostics: ${diagnosticCodes.join(", ")}` : ""
-      }`,
+        differences ? `; differences: ${differences}` : ""
+      }${diagnosticCodes?.length ? `; diagnostics: ${diagnosticCodes.join(", ")}` : ""}`,
+      'Stop plugin package changes, run "openclaw plugins registry --refresh", then retry.',
     );
   }
   return persistedSnapshotRead;

@@ -18,13 +18,14 @@ import { defaultRuntime } from "../../runtime.js";
 import { createLazyRuntimeNamedExport } from "../../shared/lazy-runtime.js";
 import type { SkillEligibilityContext, SkillSnapshot, SkillUsagePath } from "../../skills/types.js";
 import type { ExecPolicyOverrides } from "../exec-defaults.js";
-import { getSandboxBackendWorkdirResolver, requireSandboxBackendFactory } from "./backend.js";
+import { createSandboxBackend, getSandboxBackendWorkdirResolver } from "./backend.js";
 import { ensureSandboxBrowser } from "./browser.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
 import { resolveSandboxDockerUser } from "./docker-user.js";
 import { createSandboxFsBridge } from "./fs-bridge.js";
+import { hashTextSha256 } from "./hash.js";
 import { toSandboxProvisioningError } from "./provisioning-error.js";
-import { readRegisteredSandboxRuntimeIds, updateRegistry } from "./registry.js";
+import { readRegisteredSandboxRuntimeIds } from "./registry.js";
 import { resolveSandboxRuntimeStatus } from "./runtime-status.js";
 import { assertSshSandboxSecretOwnerAvailable } from "./secret-owner.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./shared.js";
@@ -78,6 +79,9 @@ async function syncSandboxSkillsToWorkspace(params: {
   } catch (error) {
     const message = error instanceof Error ? error.message : JSON.stringify(error);
     defaultRuntime.error?.(`Sandbox skill sync failed: ${message}`);
+    if (params.skillsSnapshot?.librarySelections?.length) {
+      throw error;
+    }
     return {};
   }
 }
@@ -152,6 +156,7 @@ async function ensureSandboxWorkspaceLayout(params: {
 }
 
 function resolveSandboxSession(params: {
+  skillsSnapshot?: SkillSnapshot;
   config?: OpenClawConfig;
   agentId?: string;
   sessionKey?: string;
@@ -170,7 +175,19 @@ function resolveSandboxSession(params: {
     return null;
   }
 
-  const configuredSandbox = resolveSandboxConfigForAgent(params.config, runtime.agentId);
+  const configured = resolveSandboxConfigForAgent(params.config, runtime.agentId);
+  const librarySelections = params.skillsSnapshot?.librarySelections;
+  // Shared/agent sandboxes cannot expose one person's private bundles to another session,
+  // or replace bytes under an active revision. Selection changes get a separate runtime.
+  if (librarySelections?.length) {
+    runtime.isolationSubject = {
+      kind: "session",
+      sessionKey: `${rawSessionKey}:skills:${hashTextSha256(JSON.stringify(librarySelections))}`,
+    };
+  }
+  const configuredSandbox = librarySelections?.length
+    ? { ...configured, scope: "agent" as const }
+    : configured;
   if (!runtime.sandboxRequired) {
     return { rawSessionKey, runtime, cfg: configuredSandbox };
   }
@@ -270,12 +287,11 @@ async function resolveProvisionedSandboxContext(
   });
   const resolvedCfg = docker === cfg.docker ? cfg : { ...cfg, docker };
 
-  const backendFactory = requireSandboxBackendFactory(resolvedCfg.backend);
   const registeredRuntimeIds = await readRegisteredSandboxRuntimeIds({
     backendId: resolvedCfg.backend,
     scopeKey,
   });
-  const backend = await backendFactory({
+  const backend = await createSandboxBackend({
     sessionKey: rawSessionKey,
     scopeKey,
     ...(registeredRuntimeIds.length > 0 ? { registeredRuntimeIds } : {}),
@@ -286,16 +302,6 @@ async function resolveProvisionedSandboxContext(
     ...(params.requireCurrentConfig !== undefined
       ? { requireCurrentConfig: params.requireCurrentConfig }
       : {}),
-  });
-  await updateRegistry({
-    containerName: backend.runtimeId,
-    backendId: backend.id,
-    runtimeLabel: backend.runtimeLabel,
-    sessionKey: scopeKey,
-    createdAtMs: Date.now(),
-    lastUsedAtMs: Date.now(),
-    image: backend.configLabel ?? resolvedCfg.docker.image,
-    configLabelKind: backend.configLabelKind ?? "Image",
   });
 
   const resolvedBrowserConfig = resolvedCfg.browser.enabled
@@ -392,7 +398,9 @@ export async function resolveSandboxContext(params: {
 }
 
 export async function ensureSandboxWorkspaceForSession(params: {
+  skillsSnapshot?: SkillSnapshot;
   config?: OpenClawConfig;
+  agentId?: string;
   sessionKey?: string;
   workspaceDir?: string;
 }): Promise<SandboxWorkspaceInfo | null> {
@@ -416,6 +424,7 @@ export async function ensureSandboxWorkspaceForSession(params: {
     rawSessionKey,
     isolationSubject: runtime.isolationSubject,
     config: params.config,
+    skillsSnapshot: params.skillsSnapshot,
     workspaceDir: params.workspaceDir,
   });
 

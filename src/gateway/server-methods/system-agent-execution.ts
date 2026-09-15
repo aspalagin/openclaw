@@ -1,14 +1,17 @@
-import type {
-  createRuntimeConfigWriteApplication,
-  RuntimeConfigWriteApplicationStatus,
-} from "../../config/runtime-write-application.js";
+import {
+  getRuntimeConfigAppliedHash,
+  hashRuntimeConfigValue,
+} from "../../config/runtime-snapshot.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { enqueueCommandInLane, setCommandLaneConcurrency } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
+import type { RuntimeEnv } from "../../runtime.js";
 import type {
   ActivateSetupInferenceParams,
   ActivateSetupInferenceResult,
+  VerifySetupInferenceResult,
 } from "../../system-agent/setup-inference.js";
+import type { GatewayRequestContext } from "./types.js";
 
 const SYSTEM_AGENT_GATEWAY_EXECUTION_KEY = "gateway";
 const systemAgentGatewayExecutionQueue = new KeyedAsyncQueue();
@@ -25,40 +28,71 @@ export async function runSystemAgentGatewayTask<T>(task: () => Promise<T>): Prom
   );
 }
 
+export async function verifyGatewaySetupInference(params: {
+  agentId?: string;
+  runtime: RuntimeEnv;
+  context: Pick<GatewayRequestContext, "getRuntimeConfig" | "isConfigReloadSettled">;
+}): Promise<VerifySetupInferenceResult> {
+  const [{ readConfigFileSnapshot }, { verifySetupInference }] = await Promise.all([
+    import("../../config/config.js"),
+    import("../../system-agent/setup-inference.js"),
+  ]);
+  const runtimeConfig = params.context.getRuntimeConfig();
+  const appliedHash = getRuntimeConfigAppliedHash();
+  const isCurrent = () =>
+    appliedHash !== null &&
+    params.context.isConfigReloadSettled() &&
+    params.context.getRuntimeConfig() === runtimeConfig &&
+    getRuntimeConfigAppliedHash() === appliedHash;
+  const isApplied = async () => {
+    if (!isCurrent()) {
+      return false;
+    }
+    const snapshot = await readConfigFileSnapshot();
+    return (
+      snapshot.exists &&
+      snapshot.valid &&
+      hashRuntimeConfigValue(snapshot.sourceConfig) === appliedHash &&
+      isCurrent()
+    );
+  };
+  const unavailable: VerifySetupInferenceResult = {
+    ok: false,
+    status: "unavailable",
+    error:
+      "Gateway settings are saved but not active yet. Wait for application or restart to finish, then retry verification.",
+  };
+  // The standalone verifier tests saved settings. Gateway readiness additionally
+  // requires the same applied runtime before and after that asynchronous probe.
+  if (!(await isApplied())) {
+    return unavailable;
+  }
+  const verification = await verifySetupInference({
+    runtime: params.runtime,
+    ...(params.agentId ? { agentId: params.agentId } : {}),
+  });
+  return (await isApplied()) ? verification : unavailable;
+}
+
 export async function activateGatewaySetupInference(
-  params: Omit<ActivateSetupInferenceParams, "onRuntimeApplication">,
+  params: Omit<ActivateSetupInferenceParams, "onActivationCompletion">,
 ): Promise<ActivateSetupInferenceResult> {
-  let application: ReturnType<typeof createRuntimeConfigWriteApplication> | undefined;
-  let applied: RuntimeConfigWriteApplicationStatus | undefined;
+  let complete: (() => Promise<boolean>) | undefined;
+  let restartRequired: boolean | undefined;
   let result: ActivateSetupInferenceResult;
   try {
     result = await runSystemAgentGatewayTask(async () => {
       const { activateSetupInference } = await import("../../system-agent/setup-inference.js");
       return activateSetupInference({
         ...params,
-        onRuntimeApplication: (receipt) => {
-          application = receipt;
+        onActivationCompletion: (completion) => {
+          complete = completion;
         },
       });
     });
   } finally {
-    // Release setup's queue and command lane before waiting: reload drains those lanes.
-    // The admitted RPC (or retained wizard) keeps its root alive through publication.
-    if (application) {
-      applied = application.claimed ? await application.result : "unclaimed";
-    }
+    // Reload drains setup's queue. Keep the admitted request through application and recovery.
+    restartRequired = await complete?.();
   }
-  if (!result.ok || applied === undefined || applied === "applied") {
-    return result;
-  }
-  if (applied === "applied-restart-required" || applied === "restart-pending") {
-    return { ...result, gatewayRestartRequired: true };
-  }
-  const error =
-    applied === "superseded"
-      ? "AI access was saved, but newer settings replaced it before activation finished. Review Model Setup and try again."
-      : "AI access was saved, but the Gateway could not apply it. Restart the Gateway before chatting.";
-  // Structured probe rejections permit automatic setup to try another candidate.
-  // A saved choice must stop that fallback when its application is incomplete.
-  throw new Error(error);
+  return result.ok && restartRequired ? { ...result, gatewayRestartRequired: true } : result;
 }

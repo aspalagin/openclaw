@@ -13,6 +13,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import * as legacyAuth from "./legacy-inherited-auth-dir.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   acquireReadOnlyPreparedModelRuntime,
@@ -33,7 +34,7 @@ let state: OpenClawTestState;
 describe("prepared model runtime snapshots", () => {
   beforeEach(async () => {
     state = await createOpenClawTestState({ label: "prepared-model-runtime" });
-    resetPreparedModelRuntimeHarness(state);
+    await resetPreparedModelRuntimeHarness(state);
   });
 
   it("does not discover missing owners from a gateway request", async () => {
@@ -45,20 +46,6 @@ describe("prepared model runtime snapshots", () => {
       "prepared model runtime owner was not published",
     );
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
-  });
-
-  it("publishes invalidation before the replacement generation", async () => {
-    mocks.configuredAgentIds = ["default"];
-    const events: string[] = [];
-    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
-      events.push(event.phase);
-    });
-
-    await refreshPreparedModelRuntimeSnapshots({}, { gatewayLifecycle: true });
-    unregister();
-    await refreshPreparedModelRuntimeSnapshots({});
-
-    expect(events).toEqual(["invalidated", "published"]);
   });
 
   it("makes the replacement owner readable before announcing publication", async () => {
@@ -184,13 +171,17 @@ describe("prepared model runtime snapshots", () => {
     const lease = await acquireAgentRunPreparedModelRuntime(input);
 
     await expect(prepareModelRuntimeSnapshot(input)).resolves.toBe(lease.snapshot);
-    lease.release();
+    await lease[Symbol.asyncDispose]();
     await expect(prepareModelRuntimeSnapshot(input)).rejects.toThrow(
       "prepared model runtime owner was not published",
     );
   });
 
-  it("publishes a static turn generation without live catalog discovery", async () => {
+  it.each([
+    ["omitted options", undefined],
+    ["partial options", { retainIdleRunOwner: true }],
+    ["explicit static mode", { catalogMode: "static" as const }],
+  ])("defaults %s to static turn facts without live catalog discovery", async (_name, options) => {
     const lease = await acquireAgentRunPreparedModelRuntime(
       {
         config: {},
@@ -198,12 +189,12 @@ describe("prepared model runtime snapshots", () => {
         agentDir: state.agentDir("static-run-agent"),
         workspaceDir: "/tmp/static-run-workspace",
       },
-      { catalogMode: "static" },
+      options,
     );
 
     expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
 
   it("retains only the latest idle direct-run owner", async () => {
@@ -216,14 +207,15 @@ describe("prepared model runtime snapshots", () => {
     const firstLease = await acquireAgentRunPreparedModelRuntime(firstInput, {
       retainIdleRunOwner: true,
     });
-    firstLease.release();
+    await firstLease[Symbol.asyncDispose]();
 
     await expect(prepareModelRuntimeSnapshot(firstInput)).resolves.toBe(firstLease.snapshot);
     const reusedLease = await acquireAgentRunPreparedModelRuntime(firstInput, {
       retainIdleRunOwner: true,
     });
-    reusedLease.release();
-    expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledOnce();
+    await reusedLease[Symbol.asyncDispose]();
+    expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
+    expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
 
     const secondInput = {
       ...firstInput,
@@ -232,13 +224,14 @@ describe("prepared model runtime snapshots", () => {
     const secondLease = await acquireAgentRunPreparedModelRuntime(secondInput, {
       retainIdleRunOwner: true,
     });
-    secondLease.release();
+    await secondLease[Symbol.asyncDispose]();
 
     await expect(prepareModelRuntimeSnapshot(firstInput)).rejects.toThrow(
       "prepared model runtime owner was not published",
     );
     await expect(prepareModelRuntimeSnapshot(secondInput)).resolves.toBe(secondLease.snapshot);
-    expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareStaticCatalog).toHaveBeenCalledTimes(2);
+    expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
   });
 
   it("retains an exact dynamic workspace owner after gateway run admission", async () => {
@@ -264,8 +257,8 @@ describe("prepared model runtime snapshots", () => {
 
     expect(firstLease.snapshot.workspaceDir).toBe(workspaceDir);
     expect(secondLease.snapshot).toBe(firstLease.snapshot);
-    firstLease.release();
-    secondLease.release();
+    await firstLease[Symbol.asyncDispose]();
+    await secondLease[Symbol.asyncDispose]();
     const retainedLease = await acquireAgentRunPreparedModelRuntime({
       agentId: "default",
       config,
@@ -274,8 +267,9 @@ describe("prepared model runtime snapshots", () => {
       workspaceDir,
     });
     expect(retainedLease.snapshot).toBe(firstLease.snapshot);
-    retainedLease.release();
-    expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
+    await retainedLease[Symbol.asyncDispose]();
+    expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledOnce();
+    expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
   });
 
   it("joins an in-flight dynamic owner publication", async () => {
@@ -284,10 +278,10 @@ describe("prepared model runtime snapshots", () => {
     await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
     const finishDynamicGate = createDeferred();
     let finishDynamic!: () => void;
-    mocks.ensureOpenClawModelsJson.mockImplementationOnce(async (_config, targetDir) => {
+    mocks.prepareStaticCatalog.mockImplementationOnce(async () => {
       finishDynamic = () => finishDynamicGate.resolve();
       await finishDynamicGate.promise;
-      return { agentDir: String(targetDir), wrote: false };
+      return { entries: [] };
     });
     const input = {
       agentId: "default",
@@ -301,21 +295,24 @@ describe("prepared model runtime snapshots", () => {
     let secondPending: ReturnType<typeof acquireAgentRunPreparedModelRuntime> | undefined;
     try {
       firstPending = acquireAgentRunPreparedModelRuntime(input);
-      await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce());
       secondPending = acquireAgentRunPreparedModelRuntime(input);
       await Promise.resolve();
-      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
+      expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
       finishDynamic();
       const [first, second] = await Promise.all([firstPending, secondPending]);
 
       expect(second.snapshot).toBe(first.snapshot);
-      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
-      first.release();
-      second.release();
+      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledOnce();
+      expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
+      await first[Symbol.asyncDispose]();
+      await second[Symbol.asyncDispose]();
     } finally {
       finishDynamicGate.resolve();
       await Promise.allSettled(
-        [firstPending, secondPending].map(async (pending) => (await pending)?.release()),
+        [firstPending, secondPending].map(async (pending) =>
+          (await pending)?.[Symbol.asyncDispose](),
+        ),
       );
     }
   });
@@ -337,7 +334,7 @@ describe("prepared model runtime snapshots", () => {
     await expect(acquireAgentRunPreparedModelRuntime(input)).rejects.toThrow(
       "prepared model runtime owner was not committed",
     );
-    firstLease.release();
+    await firstLease[Symbol.asyncDispose]();
   });
 
   it("activates a standalone lease on a configless gateway with no configured owners", async () => {
@@ -353,7 +350,7 @@ describe("prepared model runtime snapshots", () => {
     };
     const lease = await acquireAgentRunPreparedModelRuntime(input);
     expect(lease.snapshot.agentDir).toBe(state.agentDir("default"));
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
 
   it("activates a standalone lease for a configless runtime while another agent is configured", async () => {
@@ -369,7 +366,7 @@ describe("prepared model runtime snapshots", () => {
     };
     const lease = await acquireAgentRunPreparedModelRuntime(input);
     expect(lease.snapshot.agentDir).toBe(state.agentDir("default"));
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
 
   it("rejects an ordinary unconfigured agent on an active gateway", async () => {
@@ -414,8 +411,8 @@ describe("prepared model runtime snapshots", () => {
     const secondLease = await acquireAgentRunPreparedModelRuntime(dynamicInput);
     expect(secondLease.snapshot.config).toBe(latestConfig);
     expect(secondLease.snapshot.workspaceDir).toBe(dynamicInput.workspaceDir);
-    firstLease.release();
-    secondLease.release();
+    await firstLease[Symbol.asyncDispose]();
+    await secondLease[Symbol.asyncDispose]();
   });
 
   it("rebases a reserved run identity through its configured agent directory", async () => {
@@ -437,7 +434,7 @@ describe("prepared model runtime snapshots", () => {
       workspaceDir: "/tmp/setup-probe-workspace",
       config,
     });
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
 
   it("keeps an ordinary run bound to its configured agent identity", async () => {
@@ -459,7 +456,7 @@ describe("prepared model runtime snapshots", () => {
       workspaceDir: "/tmp/secondary-probe-workspace",
       config,
     });
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
 
   it("keeps a configured replacement after the matching dynamic lease releases", async () => {
@@ -478,7 +475,7 @@ describe("prepared model runtime snapshots", () => {
     const configuredSnapshot = await prepareModelRuntimeSnapshot(input);
 
     expect(configuredSnapshot).not.toBe(dynamicLease.snapshot);
-    dynamicLease.release();
+    await dynamicLease[Symbol.asyncDispose]();
     await expect(prepareModelRuntimeSnapshot(input)).resolves.toBe(configuredSnapshot);
   });
 
@@ -519,11 +516,15 @@ describe("prepared model runtime snapshots", () => {
 
       expect(lease.snapshot.config).toBe(latestConfig);
       expect(lease.snapshot.workspaceDir).toBe("/tmp/dynamic-replacement-workspace");
-      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(3);
-      lease.release();
+      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
+      expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
+      await lease[Symbol.asyncDispose]();
     } finally {
       finishReplacementGate.resolve();
-      await Promise.allSettled([refresh, leasePending?.then((lease) => lease.release())]);
+      await Promise.allSettled([
+        refresh,
+        leasePending?.then((lease) => lease[Symbol.asyncDispose]()),
+      ]);
     }
   });
 
@@ -545,7 +546,7 @@ describe("prepared model runtime snapshots", () => {
     expect(lease.snapshot.config).toBe(latestConfig);
     expect(lease.snapshot.agentDir).toBe(state.agentDir("default"));
     expect(lease.snapshot.workspaceDir).toBe("/tmp/dynamic-post-reload-workspace");
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
 
   it("rebinds a queued canonical run to committed directories", async () => {
@@ -573,7 +574,7 @@ describe("prepared model runtime snapshots", () => {
     expect(lease.snapshot.agentDir).toBe(state.agentDir("default"));
     expect(lease.snapshot.workspaceDir).toBe("/tmp/unused-workspace");
     expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
 
   it("reuses the configured owner at canonical gateway run admission", async () => {
@@ -592,7 +593,7 @@ describe("prepared model runtime snapshots", () => {
     });
 
     expect(lease.snapshot.workspaceDir).toBe("/tmp/gateway-launch-workspace");
-    lease.release();
+    await lease[Symbol.asyncDispose]();
     await expect(
       prepareModelRuntimeSnapshot({
         agentId: "default",
@@ -615,7 +616,7 @@ describe("prepared model runtime snapshots", () => {
 
     const lease = await acquireReadOnlyPreparedModelRuntime(input);
     expect(lease.snapshot.workspaceDir).toBe(input.workspaceDir);
-    lease.release();
+    await lease[Symbol.asyncDispose]();
 
     await expect(prepareModelRuntimeSnapshot({ ...input, readOnly: true })).rejects.toThrow(
       "prepared model runtime owner was not published",
@@ -891,58 +892,75 @@ describe("prepared model runtime snapshots", () => {
     }
   });
 
-  it("keeps one dispatch gate across overlapping auth mutations", async () => {
-    mocks.configuredAgentIds = ["default"];
-    const config = {};
-    const agentDir = state.agentDir("default");
-    await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
-    const events: string[] = [];
-    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
-      events.push(event.phase);
-    });
-    const finishFirstRefreshGate = createDeferred();
-    const finishSecondRefreshGate = createDeferred();
-    mocks.ensureOpenClawModelsJson
-      .mockImplementationOnce(async (_config, targetDir) => {
-        await finishFirstRefreshGate.promise;
-        return { agentDir: String(targetDir), wrote: false };
-      })
-      .mockImplementationOnce(async (_config, targetDir) => {
-        await finishSecondRefreshGate.promise;
-        return { agentDir: String(targetDir), wrote: false };
+  it.each([false, true])(
+    "keeps one dispatch gate across overlapping auth mutations (shared owner changed: %s)",
+    async (sharedOwnerChanged) => {
+      mocks.configuredAgentIds = ["default"];
+      const config = {};
+      const agentDir = state.agentDir("default");
+      await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
+      const events: string[] = [];
+      const unregister = registerPreparedModelRuntimePublicationListener((event) => {
+        events.push(event.phase);
       });
+      const finishFirstRefreshGate = createDeferred();
+      const finishSecondRefreshGate = createDeferred();
+      mocks.ensureOpenClawModelsJson
+        .mockImplementationOnce(async (_config, targetDir) => {
+          await finishFirstRefreshGate.promise;
+          return { agentDir: String(targetDir), wrote: false };
+        })
+        .mockImplementationOnce(async (_config, targetDir) => {
+          await finishSecondRefreshGate.promise;
+          return { agentDir: String(targetDir), wrote: false };
+        });
 
-    let dispatch: ReturnType<typeof loadPublishedGatewayReplyDispatchRuntime> | undefined;
-    try {
-      mocks.mutationListener?.({ agentDir, affectsInheritedStores: false });
-      await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
-      dispatch = loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
-      void dispatch.catch(() => undefined);
-      mocks.mutationListener?.({ agentDir, affectsInheritedStores: false });
-      finishFirstRefreshGate.resolve();
-      await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(3));
-      await expect(
-        Promise.race([dispatch.then(() => "settled"), Promise.resolve("pending")]),
-      ).resolves.toBe("pending");
+      let dispatch: ReturnType<typeof loadPublishedGatewayReplyDispatchRuntime> | undefined;
+      let reader: ReturnType<typeof prepareModelRuntimeSnapshot> | undefined;
+      const inheritance = vi.spyOn(legacyAuth, "resolveLegacyInheritedAuthDir");
+      try {
+        mocks.mutationListener?.({ agentDir, affectsInheritedStores: false });
+        await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
+        dispatch = loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
+        void dispatch.catch(() => undefined);
+        if (sharedOwnerChanged) {
+          inheritance.mockReturnValue(undefined);
+        }
+        mocks.mutationListener?.({ agentDir, affectsInheritedStores: false });
+        reader = prepareModelRuntimeSnapshot({ config, agentId: "default", agentDir });
+        void reader.catch(() => undefined);
+        finishFirstRefreshGate.resolve();
+        await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(3));
+        await expect(
+          Promise.race([dispatch.then(() => "settled"), Promise.resolve("pending")]),
+        ).resolves.toBe("pending");
 
-      finishSecondRefreshGate.resolve();
-      const runtime = await dispatch;
-      unregister();
+        finishSecondRefreshGate.resolve();
+        const runtime = await dispatch;
+        await expect(reader).resolves.toBe(
+          await prepareModelRuntimeSnapshot({ config, agentId: "default", agentDir }),
+        );
+        unregister();
 
-      expect(runtime).toBe(await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" }));
-      expect(events.filter((phase) => phase === "published")).toHaveLength(1);
-      expect(events).not.toContain("failed");
-      expect(mocks.warn).not.toHaveBeenCalled();
-    } finally {
-      finishFirstRefreshGate.resolve();
-      finishSecondRefreshGate.resolve();
-      await Promise.allSettled([
-        dispatch,
-        loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" }),
-      ]);
-      unregister();
-    }
-  });
+        expect(runtime).toBe(
+          await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" }),
+        );
+        expect(events.filter((phase) => phase === "published")).toHaveLength(1);
+        expect(events).not.toContain("failed");
+        expect(mocks.warn).not.toHaveBeenCalled();
+      } finally {
+        finishFirstRefreshGate.resolve();
+        finishSecondRefreshGate.resolve();
+        await Promise.allSettled([
+          dispatch,
+          reader,
+          loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" }),
+        ]);
+        inheritance.mockRestore();
+        unregister();
+      }
+    },
+  );
 
   it("does not let a superseded owner hide a genuine sibling refresh failure", async () => {
     const config = {};

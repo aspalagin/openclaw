@@ -33,7 +33,7 @@ let state: OpenClawTestState;
 describe("prepared model runtime owner selection", () => {
   beforeEach(async () => {
     state = await createOpenClawTestState({ label: "prepared-model-runtime" });
-    resetPreparedModelRuntimeHarness(state);
+    await resetPreparedModelRuntimeHarness(state);
   });
 
   it("serializes live catalog sources for owners sharing one agent directory", async () => {
@@ -172,8 +172,39 @@ describe("prepared model runtime owner selection", () => {
       workspaceDir: "/tmp/isolated-probe-workspace",
     });
     expect(lease.snapshot.agentDir).toBe(state.agentDir("isolated-probe-agent"));
-    lease.release();
+    await lease[Symbol.asyncDispose]();
   });
+
+  it.each(["static", undefined] as const)(
+    "keeps isolated executable catalogs separate from live discovery (%s)",
+    async (catalogMode) => {
+      const discovered = { id: "live-only", name: "Live catalog row", provider: "custom" };
+      mocks.buildPreparedModelCatalogSnapshot.mockResolvedValue({
+        entries: [discovered],
+        routeVariants: [discovered],
+      });
+      const lease = await acquireReadOnlyPreparedModelRuntime(
+        {
+          config: {},
+          agentDir: state.agentDir("isolated-probe-agent"),
+          workspaceDir: state.workspaceDir,
+          loadRuntimePlugins: true,
+        },
+        { catalogMode },
+      );
+      try {
+        expect(lease.snapshot.modelCatalog.entries.map(({ id }) => id)).toEqual(
+          catalogMode === "static" ? [] : [discovered.id],
+        );
+        expect(mocks.buildPreparedModelCatalogSnapshot).toHaveBeenCalledTimes(
+          catalogMode === "static" ? 0 : 1,
+        );
+      } finally {
+        await lease[Symbol.asyncDispose]();
+      }
+      expect(getPreparedModelRuntimeTestApi().getPreparedModelRuntimeOwnerCountForTest()).toBe(0);
+    },
+  );
 
   it("publishes provider selections kept on the core runtime by request parameters", async () => {
     mocks.configuredAgentIds = ["default"];
@@ -226,9 +257,9 @@ describe("prepared model runtime owner selection", () => {
       workspaceDir: "/tmp/unused-workspace",
     };
     const first = await acquireAgentRunPreparedModelRuntime(runInput);
-    first.release();
+    await first[Symbol.asyncDispose]();
     const second = await acquireAgentRunPreparedModelRuntime(runInput);
-    second.release();
+    await second[Symbol.asyncDispose]();
 
     expect(first.snapshot).toBe(configured);
     expect(second.snapshot).toBe(first.snapshot);
@@ -245,6 +276,23 @@ describe("prepared model runtime owner selection", () => {
     expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
     expect(mocks.discoverModels).toHaveBeenCalledOnce();
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
+  });
+
+  it("replaces a static run owner when an explicit live acquisition follows", async () => {
+    const input = {
+      config: {},
+      agentId: "default",
+      agentDir: state.agentDir("catalog-mode-upgrade"),
+      workspaceDir: "/tmp/catalog-mode-upgrade-workspace",
+    };
+    const staticLease = await acquireAgentRunPreparedModelRuntime(input);
+    const liveLease = await acquireAgentRunPreparedModelRuntime(input, { catalogMode: "live" });
+
+    expect(liveLease.snapshot).not.toBe(staticLease.snapshot);
+    expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
+    expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledOnce();
+    await staticLease[Symbol.asyncDispose]();
+    await liveLease[Symbol.asyncDispose]();
   });
 
   it("rejects unpublished plugin generations while matching pending callers share their owner", async () => {
@@ -276,13 +324,16 @@ describe("prepared model runtime owner selection", () => {
     let matchingPendingA: ReturnType<typeof acquireAgentRunPreparedModelRuntime> | undefined;
     try {
       pendingA = acquireAgentRunPreparedModelRuntime(input, {
+        catalogMode: "live",
         pluginGeneration: generationA!,
       });
       await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
       matchingPendingA = acquireAgentRunPreparedModelRuntime(input, {
+        catalogMode: "live",
         pluginGeneration: generationA!,
       });
       const pendingB = acquireAgentRunPreparedModelRuntime(input, {
+        catalogMode: "live",
         pluginGeneration: generationB,
       }).catch((error: unknown) => error);
       await Promise.resolve();
@@ -300,12 +351,14 @@ describe("prepared model runtime owner selection", () => {
       );
       expect(leaseA.snapshot.metadataSnapshot).toBe(generationA!.pluginMetadataSnapshot);
       await expect(prepareModelRuntimeSnapshot(input)).resolves.toBe(leaseA.snapshot);
-      leaseA.release();
-      matchingLeaseA.release();
+      await leaseA[Symbol.asyncDispose]();
+      await matchingLeaseA[Symbol.asyncDispose]();
     } finally {
       finishGenerationAGate.resolve();
       await Promise.allSettled(
-        [pendingA, matchingPendingA].map(async (pending) => (await pending)?.release()),
+        [pendingA, matchingPendingA].map(async (pending) =>
+          (await pending)?.[Symbol.asyncDispose](),
+        ),
       );
     }
   });
@@ -382,13 +435,13 @@ describe("prepared model runtime owner selection", () => {
             committedSnapshot,
           );
           expect(mocks.loadAgentRuntimePluginRegistryHandle).toHaveBeenCalledTimes(registryLoads);
-          resumed.release();
+          await resumed[Symbol.asyncDispose]();
           const clonedConfigLease = await acquireAgentRunPreparedModelRuntime(
             runInput(structuredClone(previousConfig)),
             { pluginGeneration: admitted!.pluginGeneration },
           );
           expect(clonedConfigLease.snapshot).toBe(previousSnapshot);
-          clonedConfigLease.release();
+          await clonedConfigLease[Symbol.asyncDispose]();
           await expect(
             acquireAgentRunPreparedModelRuntime(
               { ...runInput(previousConfig), workspaceDir: "/tmp/different-workspace" },
@@ -410,7 +463,7 @@ describe("prepared model runtime owner selection", () => {
       );
     } finally {
       outerLeaseActive = false;
-      outerLease.release();
+      await outerLease[Symbol.asyncDispose]();
       releaseDetachedAdmission();
       await Promise.allSettled([detachedAdmission]);
     }
@@ -426,7 +479,7 @@ describe("prepared model runtime owner selection", () => {
 
     const next = await acquireAgentRunPreparedModelRuntime(runInput(committedConfig));
     expect(next.snapshot).toBe(committedSnapshot);
-    next.release();
+    await next[Symbol.asyncDispose]();
   });
 
   it("does not let a stale pinned generation replace an owner awaiting auth refresh", async () => {
@@ -476,7 +529,7 @@ describe("prepared model runtime owner selection", () => {
         runtimePluginSelections: [{ provider: "openai", modelId, runtime: "codex" }],
         workspaceDir: "/tmp/unused-workspace",
       });
-      lease.release();
+      await lease[Symbol.asyncDispose]();
       return lease.snapshot;
     };
 
@@ -508,7 +561,7 @@ describe("prepared model runtime owner selection", () => {
     const configured = getPreparedModelRuntimeSnapshot(configuredInput);
     const configuredLease = await acquireAgentRunPreparedModelRuntime(configuredInput);
     expect(configuredLease.snapshot).toBe(configured);
-    configuredLease.release();
+    await configuredLease[Symbol.asyncDispose]();
 
     for (let index = 0; index < 9; index += 1) {
       const lease = await acquireAgentRunPreparedModelRuntime({
@@ -517,7 +570,7 @@ describe("prepared model runtime owner selection", () => {
           { provider: "openai", modelId: `run-model-${index}`, runtime: "codex" },
         ],
       });
-      lease.release();
+      await lease[Symbol.asyncDispose]();
     }
 
     expect(getPreparedModelRuntimeSnapshot(configuredInput)).toBe(configured);
@@ -540,7 +593,7 @@ describe("prepared model runtime owner selection", () => {
         ],
         workspaceDir: "/tmp/unused-workspace",
       });
-      lease.release();
+      await lease[Symbol.asyncDispose]();
     }
     expect(getPreparedModelRuntimeTestApi().getPreparedModelRuntimeOwnerCountForTest()).toBe(4);
 
@@ -639,7 +692,7 @@ describe("prepared model runtime owner selection", () => {
     expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(3);
   });
 
-  it("shares static workspace facts without eager per-agent catalog work", async () => {
+  it("shares static workspace facts across configured agents", async () => {
     mocks.configuredAgentIds = ["agent-a", "agent-b", "agent-c", "agent-d"];
     for (const agentId of ["agent-a", "agent-b", "agent-c"]) {
       mocks.configuredWorkspaces.set(agentId, "/tmp/shared-prepared-runtime-workspace");
@@ -668,6 +721,11 @@ describe("prepared model runtime owner selection", () => {
 
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
     expect(mocks.loadAgentRuntimePluginRegistryHandle).toHaveBeenCalledTimes(4);
+    expect(
+      mocks.loadAgentRuntimePluginRegistryHandle.mock.calls.map(
+        ([params]) => params.configuredHarnessRuntimes,
+      ),
+    ).toEqual([["codex"], ["codex"], ["codex"], ["codex"]]);
     expect(mocks.resolveAmbientCredentials).toHaveBeenCalledTimes(2);
     expect(mocks.prepareStaticCatalog).toHaveBeenCalledTimes(2);
     expect(mocks.resolveStaticCatalogModel).toHaveBeenCalledTimes(2);
@@ -682,17 +740,6 @@ describe("prepared model runtime owner selection", () => {
       runtimeRegistryCount: 2,
       fullCatalogConcurrencyLimit: 1,
     });
-
-    const snapshot = getPreparedModelRuntimeSnapshot({
-      agentId: "agent-a",
-      config,
-      agentDir: state.agentDir("agent-a"),
-      inheritedAuthDir: state.agentDir("default"),
-      workspaceDir: "/tmp/shared-prepared-runtime-workspace",
-    });
-    await snapshot?.loadFullModelCatalog?.();
-    expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
-    expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
   });
 
   it("shares workspace facts while isolating each agent's configured model projection", async () => {
@@ -889,59 +936,14 @@ describe("prepared model runtime owner selection", () => {
         inheritedAuthDir: state.agentDir("default"),
         workspaceDir: "/tmp/shared-prepared-runtime-workspace",
       })?.loadFullModelCatalog?.();
-    await Promise.all([loadAgentCatalog("agent-a"), loadAgentCatalog("agent-b")]);
+    const catalogs = await Promise.all([loadAgentCatalog("agent-a"), loadAgentCatalog("agent-b")]);
+    expect(catalogs).toEqual([
+      expect.objectContaining({ entries: [], routeVariants: [] }),
+      expect.objectContaining({ entries: [], routeVariants: [] }),
+    ]);
 
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
-    expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(2);
     expect(peakActivePlans).toBe(1);
-  });
-
-  it("serializes a lazy catalog plan before a superseding generation", async () => {
-    mocks.configuredAgentIds = ["agent-a"];
-    mocks.configuredWorkspaces.set("agent-a", "/tmp/shared-prepared-runtime-workspace");
-    const initialConfig = { agents: { defaults: { model: "openai/gpt-5.5" } } };
-    await refreshPreparedModelRuntimeSnapshots(initialConfig, {
-      gatewayLifecycle: true,
-      catalogMode: "static",
-    });
-    const snapshot = getPreparedModelRuntimeSnapshot({
-      agentId: "agent-a",
-      config: initialConfig,
-      agentDir: state.agentDir("agent-a"),
-      inheritedAuthDir: state.agentDir("default"),
-      workspaceDir: "/tmp/shared-prepared-runtime-workspace",
-    });
-    const releaseLazyPlanGate = createDeferred();
-    let releaseLazyPlan: (() => void) | undefined;
-    mocks.runPreparedModelCatalogWorker.mockImplementation(async () => {
-      if (!releaseLazyPlan) {
-        releaseLazyPlan = releaseLazyPlanGate.resolve;
-        await releaseLazyPlanGate.promise;
-      }
-      return { entries: [], routeVariants: [] };
-    });
-
-    let replacement: ReturnType<typeof refreshPreparedModelRuntimeSnapshots> | undefined;
-    const staleCatalogLoad = snapshot?.loadFullModelCatalog?.();
-    try {
-      await vi.waitFor(() => expect(releaseLazyPlan).toBeTypeOf("function"));
-      replacement = refreshPreparedModelRuntimeSnapshots(
-        { agents: { defaults: { model: "openai/gpt-5.6" } } },
-        { gatewayLifecycle: true, catalogMode: "live" },
-      );
-      await Promise.resolve();
-      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
-      expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
-
-      releaseLazyPlanGate.resolve();
-      await expect(staleCatalogLoad).rejects.toThrow("superseded");
-      await replacement;
-      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
-      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledOnce();
-    } finally {
-      releaseLazyPlanGate.resolve();
-      await Promise.allSettled([staleCatalogLoad, replacement]);
-    }
   });
 
   it("stops a superseded same-directory batch before another catalog write", async () => {

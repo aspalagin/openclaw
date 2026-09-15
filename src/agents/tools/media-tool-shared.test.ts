@@ -108,30 +108,13 @@ describe("resolveMediaToolLocalRoots", () => {
       },
     };
 
-    const withoutChannel = await resolveMediaToolReferenceAccess({
+    const { localRoots } = await resolveMediaToolReferenceAccess({
       input: "relative/reference.png",
       isDataUrl: false,
-      rootOptions: { cfg },
     });
-    expect(withoutChannel.localRoots.map(normalizeHostPath)).not.toContain(
-      normalizeHostPath(accountRoot),
-    );
-    expect(withoutChannel.localRoots.map(normalizeHostPath)).not.toContain(
-      normalizeHostPath(sharedRoot),
-    );
+    expect(localRoots.map(normalizeHostPath)).not.toContain(normalizeHostPath(accountRoot));
+    expect(localRoots.map(normalizeHostPath)).not.toContain(normalizeHostPath(sharedRoot));
     expect(resolveMediaToolInboundRoots({ cfg })).toEqual([]);
-
-    const withImessage = await resolveMediaToolReferenceAccess({
-      input: "relative/reference.png",
-      isDataUrl: false,
-      rootOptions: { cfg, channelId: "imessage", accountId: "work" },
-    });
-    expect(withImessage.localRoots.map(normalizeHostPath)).not.toContain(
-      normalizeHostPath(accountRoot),
-    );
-    expect(withImessage.localRoots.map(normalizeHostPath)).not.toContain(
-      normalizeHostPath(sharedRoot),
-    );
     expect(
       resolveMediaToolInboundRoots({
         cfg,
@@ -157,7 +140,7 @@ describe("resolveMediaToolReferenceAccess", () => {
     ).resolves.toMatchObject({ resolvedPath: filePath });
   });
 
-  it.each(["relative/reference.png", "https://example.com/reference.png", "media://inbound/a.png"])(
+  it.each(["https://example.com/reference.png", "media://inbound/a.png"])(
     "preserves non-file reference %s",
     async (input) => {
       await expect(
@@ -232,6 +215,48 @@ describe("resolveMediaToolReferenceAccess", () => {
       ]);
     },
   );
+});
+
+describe("resolveCapabilityModelConfigForTool", () => {
+  it("does not load runtime providers while resolving an explicitly configured model", () => {
+    const listProviders = vi.fn(() => {
+      throw new Error("runtime provider list should not run for explicit model config");
+    });
+
+    expect(
+      resolveCapabilityModelConfigForTool({
+        modelConfig: { primary: "qwen/wan2.6-t2v" },
+        providers: listProviders,
+      }),
+    ).toEqual({ primary: "qwen/wan2.6-t2v" });
+    expect(listProviders).not.toHaveBeenCalled();
+  });
+
+  it("orders auto-detected provider defaults by canonical aliases", () => {
+    expect(
+      resolveCapabilityModelConfigForTool({
+        cfg: {
+          agents: { defaults: { model: { primary: "media-alias/gpt-5.5" } } },
+        },
+        providers: [
+          {
+            id: "fal",
+            defaultModel: "fal-ai/minimax/video-01-live",
+            isConfigured: () => true,
+          },
+          {
+            id: "openai",
+            aliases: ["media-alias"],
+            defaultModel: "sora-2",
+            isConfigured: () => true,
+          },
+        ],
+      }),
+    ).toEqual({
+      primary: "openai/sora-2",
+      fallbacks: ["fal/fal-ai/minimax/video-01-live"],
+    });
+  });
 });
 
 describe("hasGenerationToolAvailability", () => {

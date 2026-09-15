@@ -13,12 +13,15 @@ import {
   stripInterSessionPromptPrefixForDisplay,
 } from "../sessions/input-provenance.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
+import { projectAssistantDisplayContent } from "../shared/assistant-display-content.js";
+import { extractAssistantPhaseText } from "../shared/chat-message-content.js";
 import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
 import { extractChatHistoryBlockText } from "./chat-display-projection.canvas.js";
 import {
   asRoleContentMessage,
   extractProjectedText,
   hasAssistantNonTextContent,
+  hasAssistantDisplayableNonTextContent,
   hasTranscriptMediaFacts,
   isEmptyTextOnlyContent,
   isProjectedSessionsSendForwardedMessage,
@@ -157,7 +160,10 @@ export function mergeTtsSupplementMessages(
 
 function isSubagentAnnounceInterSessionUserMessage(message: Record<string, unknown>): boolean {
   const provenance = normalizeInputProvenance(message.provenance);
-  if (provenance?.kind === "inter_session" && provenance.sourceTool === "subagent_announce") {
+  if (
+    provenance?.kind === "inter_session" &&
+    (provenance.sourceTool === "subagent_announce" || provenance.sourceTool === "subagent_settle")
+  ) {
     return true;
   }
   const text = extractProjectedText(message.content ?? message.text);
@@ -177,7 +183,10 @@ function isSubagentAnnounceInterSessionUserChatHistoryMessage(message: unknown):
     return false;
   }
   const provenance = normalizeInputProvenance(record.provenance);
-  if (provenance?.kind === "inter_session" && provenance.sourceTool === "subagent_announce") {
+  if (
+    provenance?.kind === "inter_session" &&
+    (provenance.sourceTool === "subagent_announce" || provenance.sourceTool === "subagent_settle")
+  ) {
     return true;
   }
   const text = extractChatHistoryBlockText(record);
@@ -192,38 +201,45 @@ function isChatHistoryAssistantMessage(message: unknown): boolean {
   return readRecord(message)?.role === "assistant";
 }
 
+export function createPreSessionStartAnnouncePairFilter(sessionStartedAt: number | undefined) {
+  let precedingAnnounce = false;
+  return (messages: unknown[]): unknown[] => {
+    if (sessionStartedAt === undefined || messages.length === 0) {
+      return messages;
+    }
+    let changed = false;
+    const kept: unknown[] = [];
+    for (const current of messages) {
+      if (precedingAnnounce) {
+        precedingAnnounce = false;
+        const ts = isChatHistoryAssistantMessage(current)
+          ? readChatHistoryRecordTimestampMs(current)
+          : undefined;
+        if (typeof ts === "number" && ts < sessionStartedAt) {
+          changed = true;
+          continue;
+        }
+      }
+      if (isSubagentAnnounceInterSessionUserChatHistoryMessage(current)) {
+        const ts = readChatHistoryRecordTimestampMs(current);
+        if (typeof ts === "number" && ts < sessionStartedAt) {
+          // The adjacent assistant may arrive in the next appended chunk.
+          precedingAnnounce = true;
+          changed = true;
+          continue;
+        }
+      }
+      kept.push(current);
+    }
+    return changed ? kept : messages;
+  };
+}
+
 export function dropPreSessionStartAnnouncePairs(
   messages: unknown[],
   sessionStartedAt: number | undefined,
 ): unknown[] {
-  if (sessionStartedAt === undefined || messages.length === 0) {
-    return messages;
-  }
-  let changed = false;
-  const kept: unknown[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const current = messages[i];
-    if (isSubagentAnnounceInterSessionUserChatHistoryMessage(current)) {
-      const ts = readChatHistoryRecordTimestampMs(current);
-      if (typeof ts === "number" && ts < sessionStartedAt) {
-        const next = messages[i + 1];
-        const nextTs = readChatHistoryRecordTimestampMs(next);
-        if (
-          isChatHistoryAssistantMessage(next) &&
-          typeof nextTs === "number" &&
-          nextTs < sessionStartedAt
-        ) {
-          // Skip only an assistant reply that is also pre-session-start; recent
-          // or timestampless assistants may be real fresh-session context.
-          i++;
-        }
-        changed = true;
-        continue;
-      }
-    }
-    kept.push(current);
-  }
-  return changed ? kept : messages;
+  return createPreSessionStartAnnouncePairFilter(sessionStartedAt)(messages);
 }
 
 function isDisplayHiddenProjectedMessage(message: Record<string, unknown>): boolean {
@@ -349,6 +365,21 @@ function isDuplicateChannelFinalDeliveryMirror(
     return false;
   }
   const previousMeta = readRecord(previousVisible["__openclaw"]);
+  if (typeof deliveryMirror.sourceAssistantMessageId === "string") {
+    if (
+      !deliveryMirror.sourceAssistantMessageId ||
+      deliveryMirror.sourceAssistantMessageId !== previousMeta?.id ||
+      hasAssistantDisplayableNonTextContent(previousVisible) ||
+      hasAssistantNonTextContent(current) ||
+      hasTranscriptMediaFacts(previousVisible) ||
+      hasTranscriptMediaFacts(current)
+    ) {
+      return false;
+    }
+    const previousText = extractAssistantPhaseText(previousVisible)?.trim();
+    const currentText = extractAssistantPhaseText(current)?.trim();
+    return Boolean(previousText && currentText && previousText === currentText);
+  }
   if (typeof previousMeta?.mirrorIdentity !== "string" || !previousMeta.mirrorIdentity.trim()) {
     return false;
   }
@@ -361,10 +392,10 @@ function isDuplicateChannelFinalDeliveryMirror(
 }
 
 export function toProjectedMessages(messages: unknown[]): Array<Record<string, unknown>> {
-  return messages.filter(
-    (message): message is Record<string, unknown> =>
-      Boolean(message) && typeof message === "object" && !Array.isArray(message),
-  );
+  return messages.flatMap((message) => {
+    const record = readRecord(message);
+    return record ? [projectAssistantDisplayContent(record)] : [];
+  });
 }
 
 export function filterVisibleProjectedHistoryMessages(
