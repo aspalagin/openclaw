@@ -5,12 +5,29 @@ import type { TelegramBotDeps } from "./bot-deps.js";
 import { createTelegramMessageSessionRuntime } from "./bot-handlers.message-context.js";
 
 describe("createTelegramMessageSessionRuntime", () => {
-  it("keeps a DM topic independent from the flat DM model override", () => {
+  it.each([
+    { name: "fresh", topic: {}, model: "openai/gpt-5.5" },
+    {
+      name: "previously used",
+      topic: { modelProvider: "anthropic", model: "claude-opus-4-7" },
+      model: "openai/gpt-5.5",
+    },
+    {
+      name: "explicitly pinned",
+      topic: { providerOverride: "anthropic", modelOverride: "claude-opus-4-7" },
+      model: "anthropic/claude-opus-4-7",
+    },
+    {
+      name: "explicitly parented",
+      topic: { parentSessionKey: "agent:main:main" },
+      model: "anthropic/claude-opus-4-7",
+    },
+  ])("uses the effective model for a $name DM topic picker", ({ topic, model }) => {
     const storePath = "/tmp/telegram-sessions.sqlite";
     const childSessionKey = "agent:main:main:thread:12345:99";
     const parentSessionKey = "agent:main:main";
     const entries: Record<string, SessionEntry> = {
-      [childSessionKey]: { sessionId: "child", updatedAt: 2 },
+      [childSessionKey]: { sessionId: "child", updatedAt: 2, ...topic },
       [parentSessionKey]: {
         sessionId: "parent",
         updatedAt: 1,
@@ -38,12 +55,11 @@ describe("createTelegramMessageSessionRuntime", () => {
       threadSpec: { id: 99, scope: "dm" },
       botHasTopicsEnabled: true,
       senderId: 12345,
-      runtimeCfg: {},
+      runtimeCfg: { agents: { defaults: { model: "openai/gpt-5.5" } } },
     });
 
     expect(state.sessionKey).toBe(childSessionKey);
-    expect(state.model).toBeUndefined();
-    expect(getSessionEntry).toHaveBeenCalledOnce();
+    expect(state.model).toBe(model);
     expect(getSessionEntry).toHaveBeenCalledWith({ storePath, sessionKey: childSessionKey });
   });
 });

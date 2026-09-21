@@ -119,7 +119,7 @@ export function resolveStoredModelOverrideCore(
     sessionEntry?: SessionEntry;
     sessionStore?: Record<string, SessionEntry>;
     sessionKey?: string;
-    parentSessionKey?: string;
+    parentSessionKey?: string | null;
     defaultProvider: string;
     allowPluginNormalization?: boolean;
   } & ModelManifestNormalizationContext,

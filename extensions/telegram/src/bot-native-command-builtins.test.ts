@@ -175,41 +175,76 @@ describe("Telegram native command built-ins", () => {
     expect(menuRecord.catalog).toEqual(runtimeCatalog);
   });
 
-  it("keeps DM thread native argument menus independent from the flat DM model", async () => {
-    const cfg: OpenClawConfig = {};
-    sessionMocks.sessionStoreEntries.mockReturnValue({
-      "agent:main:main": {
-        providerOverride: "anthropic",
-        modelOverride: "claude-opus-4-7",
-        modelOverrideSource: "user",
-        updatedAt: 0,
-      },
-    });
+  it.each([
+    { name: "fresh", topic: {}, provider: "openai", model: "gpt-5.5", thinking: "low" },
+    {
+      name: "previously used",
+      topic: { modelProvider: "anthropic", model: "claude-opus-4-7" },
+      provider: "openai",
+      model: "gpt-5.5",
+      thinking: "low",
+    },
+    {
+      name: "explicitly pinned",
+      topic: { providerOverride: "anthropic", modelOverride: "claude-opus-4-7" },
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      thinking: "high",
+    },
+    {
+      name: "explicitly parented",
+      topic: { parentSessionKey: "agent:main:main" },
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      thinking: "high",
+    },
+  ])(
+    "uses the effective model for a $name DM topic menu",
+    async ({ topic, provider, model, thinking }) => {
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            model: "openai/gpt-5.5",
+            models: {
+              "openai/gpt-5.5": { params: { thinking: "low" } },
+              "anthropic/claude-opus-4-7": { params: { thinking: "high" } },
+            },
+          },
+        },
+      };
+      sessionMocks.sessionStoreEntries.mockReturnValue({
+        "agent:main:main": {
+          providerOverride: "anthropic",
+          modelOverride: "claude-opus-4-7",
+          modelOverrideSource: "user",
+          updatedAt: 0,
+        },
+        "agent:main:main:thread:100:77": { ...topic, updatedAt: 1 },
+      });
 
-    const { handler, sendMessage } = registerAndResolveCommandHandler({
-      commandName: "think",
-      cfg,
-      allowFrom: ["*"],
-    });
-    await handler(createTelegramPrivateCommandContext({ threadId: 77, botHasTopicsEnabled: true }));
+      const { handler, sendMessage } = registerAndResolveCommandHandler({
+        commandName: "think",
+        cfg,
+        allowFrom: ["*"],
+      });
+      await handler(
+        createTelegramPrivateCommandContext({ threadId: 77, botHasTopicsEnabled: true }),
+      );
 
-    const menuCall = commandAuthMocks.resolveCommandArgMenu.mock.calls.find(
-      ([params]) => params.command.key === "think",
-    )?.[0];
-    expectRecordFields(
-      menuCall,
-      { provider: undefined, model: undefined },
-      "thread thinking menu call",
-    );
-    expectSendMessageCall({
-      sendMessage,
-      chatId: 100,
-      textIncludes: "Choose level for /think.",
-      requireReplyMarkup: true,
-      label: "thread thinking menu",
-    });
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
-  });
+      const menuCall = commandAuthMocks.resolveCommandArgMenu.mock.calls.find(
+        ([params]) => params.command.key === "think",
+      )?.[0];
+      expectRecordFields(menuCall, { provider, model }, "thread thinking menu call");
+      expectSendMessageCall({
+        sendMessage,
+        chatId: 100,
+        textIncludes: `Current thinking level: ${thinking}.\nChoose level for /think.`,
+        requireReplyMarkup: true,
+        label: "thread thinking menu",
+      });
+      expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses the configured default model instead of temporary auto fallback overrides", async () => {
     const cfg = {

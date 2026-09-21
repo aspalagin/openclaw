@@ -88,13 +88,13 @@ function resolveTelegramCommandMenuModelContext(params: {
         sessionEntry: entry,
         loadSessionEntry: (sessionKey) => getSessionEntry({ storePath, sessionKey }),
         sessionKey: params.sessionKey,
-        parentSessionKey: params.parentSessionKey,
+        parentSessionKey: entry?.parentSessionKey ?? params.parentSessionKey,
         defaultProvider: defaultModel.provider,
       });
-      if (override?.model) {
+      if (override?.model || params.parentSessionKey === null) {
         context = buildTelegramCommandMenuModelContext({
-          provider: override.provider || defaultModel.provider,
-          model: override.model,
+          provider: override?.provider || defaultModel.provider,
+          model: override?.model ?? defaultModel.model,
           ...(thinkingLevel ? { thinkingLevel } : {}),
           ...(fastMode !== undefined ? { fastMode } : {}),
         });
@@ -149,7 +149,7 @@ function resolveTelegramFastCommandModelContext(params: {
       sessionEntry: entry,
       loadSessionEntry: (sessionKey) => getSessionEntry({ storePath, sessionKey }),
       sessionKey: params.sessionKey,
-      parentSessionKey: params.parentSessionKey,
+      parentSessionKey: entry?.parentSessionKey ?? params.parentSessionKey,
       defaultProvider: defaultModel.provider,
     });
     return {
@@ -288,6 +288,8 @@ export async function executeTelegramBuiltinCommand(
   if (!dispatch) {
     return "handled";
   }
+  const modelParentSessionKey =
+    dispatch.threadSpec.scope === "dm" && dispatch.threadSpec.id != null ? null : undefined;
   if (commandDefinition?.key === "login") {
     const { executeTelegramLoginCommand } = await loadTelegramLoginCommandExecutor();
     const currentProvider =
@@ -295,6 +297,7 @@ export async function executeTelegramBuiltinCommand(
         cfg: dispatch.runtimeCfg,
         agentId: dispatch.route.agentId,
         sessionKey: dispatch.targetSessionKey,
+        parentSessionKey: modelParentSessionKey,
       }).provider ??
       resolveDefaultModelForAgent({
         cfg: dispatch.runtimeCfg,
@@ -316,8 +319,6 @@ export async function executeTelegramBuiltinCommand(
     );
   const sessionKeyForMenu =
     commandDefinition && menuNeedsModelContext ? dispatch.targetSessionKey : "";
-  const modelParentSessionKey =
-    dispatch.threadSpec.scope === "dm" && dispatch.threadSpec.id != null ? null : undefined;
   const fastCommandState =
     commandDefinition?.key === "fast" && menuNeedsModelContext
       ? resolveTelegramFastCommandState({
@@ -391,6 +392,7 @@ export async function executeTelegramBuiltinCommand(
                   cfg: dispatch.runtimeCfg,
                   agentId: dispatch.route.agentId,
                   sessionKey: sessionKeyForMenu,
+                  parentSessionKey: modelParentSessionKey,
                 })),
             })
           : undefined,

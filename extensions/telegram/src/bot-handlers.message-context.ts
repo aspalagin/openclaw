@@ -222,31 +222,29 @@ export function createTelegramMessageSessionRuntime({
       agentId: route.agentId,
     });
     const entry = loadSessionEntry({ storePath, sessionKey });
+    const defaultModel = resolveDefaultModelForAgent({
+      cfg: params.runtimeCfg,
+      agentId: route.agentId,
+    });
+    const useDmThreadSession = shouldUseTelegramDmThreadSession({
+      dmThreadId,
+      botHasTopicsEnabled: params.botHasTopicsEnabled,
+    });
     const storedOverride = resolveStoredModelOverride({
       sessionEntry: entry,
       loadSessionEntry: (parentSessionKey) =>
         loadSessionEntry({ storePath, sessionKey: parentSessionKey }),
       sessionKey,
-      parentSessionKey: shouldUseTelegramDmThreadSession({
-        dmThreadId,
-        botHasTopicsEnabled: params.botHasTopicsEnabled,
-      })
-        ? null
-        : undefined,
-      defaultProvider: resolveDefaultModelForAgent({
-        cfg: params.runtimeCfg,
-        agentId: route.agentId,
-      }).provider,
+      parentSessionKey: entry?.parentSessionKey ?? (useDmThreadSession ? null : undefined),
+      defaultProvider: defaultModel.provider,
     });
-    if (storedOverride) {
+    if (storedOverride || useDmThreadSession) {
       return {
         agentId: route.agentId,
         sessionEntry: entry,
         sessionKey,
         storePath,
-        model: storedOverride.provider
-          ? `${storedOverride.provider}/${storedOverride.model}`
-          : storedOverride.model,
+        model: `${storedOverride?.provider ?? defaultModel.provider}/${storedOverride?.model ?? defaultModel.model}`,
       };
     }
     const provider = entry?.modelProvider?.trim();
