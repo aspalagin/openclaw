@@ -323,7 +323,7 @@ describe("msteamsPlugin", () => {
     );
   });
 
-  it("keeps critical open-group findings on the setup security surface", async () => {
+  it("keeps open-group warnings on the setup security surface", async () => {
     const cfg = {
       channels: {
         msteams: {
@@ -347,7 +347,7 @@ describe("msteamsPlugin", () => {
       expect(warnings).toEqual([
         expect.objectContaining({
           checkId: "channels.msteams.groups.open",
-          severity: "critical",
+          severity: "warn",
         }),
       ]);
     }
