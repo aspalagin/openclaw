@@ -814,6 +814,10 @@ export async function getReplyFromConfig(
     }
   }
 
+  const modelParentSessionKey =
+    sessionCtx.ModelParentSessionKey !== undefined
+      ? sessionCtx.ModelParentSessionKey
+      : sessionCtx.ParentSessionKey;
   const channelModelOverride = cfg.channels?.modelByChannel
     ? resolveChannelModelOverride({
         cfg,
@@ -829,10 +833,7 @@ export async function getReplyFromConfig(
         groupChannel:
           sessionEntry.groupChannel ?? sessionCtx.GroupChannel ?? finalized.GroupChannel,
         groupSubject: sessionEntry.subject ?? sessionCtx.GroupSubject ?? finalized.GroupSubject,
-        parentSessionKey:
-          sessionCtx.ModelParentSessionKey !== undefined
-            ? sessionCtx.ModelParentSessionKey
-            : sessionCtx.ParentSessionKey,
+        parentSessionKey: modelParentSessionKey,
         directUserIds: [
           sessionDeliveryOrigin(sessionEntry)?.nativeDirectUserId,
           sessionDeliveryOrigin(sessionEntry)?.from,
@@ -863,11 +864,7 @@ export async function getReplyFromConfig(
     sessionEntry,
     sessionStore,
     sessionKey,
-    parentSessionKey:
-      sessionEntry.parentSessionKey ??
-      (sessionCtx.ModelParentSessionKey !== undefined
-        ? sessionCtx.ModelParentSessionKey
-        : sessionCtx.ParentSessionKey),
+    parentSessionKey: sessionEntry.parentSessionKey ?? modelParentSessionKey,
     defaultProvider,
   });
   const staleHeartbeatAutoFallbackOverride =
@@ -1103,11 +1100,7 @@ export async function getReplyFromConfig(
         sessionEntry,
         sessionStore,
         sessionKey,
-        parentSessionKey:
-          sessionEntry.parentSessionKey ??
-          (sessionCtx.ModelParentSessionKey !== undefined
-            ? sessionCtx.ModelParentSessionKey
-            : sessionCtx.ParentSessionKey),
+        parentSessionKey: sessionEntry.parentSessionKey ?? modelParentSessionKey,
         storePath,
         defaultProvider,
         defaultModel,
