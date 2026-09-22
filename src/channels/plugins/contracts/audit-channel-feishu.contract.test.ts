@@ -1,30 +1,32 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { feishuPlugin } from "../extensions/feishu/channel-plugin-api.js";
-import type { ChannelPlugin } from "../src/channels/plugins/types.plugin.js";
-import type { OpenClawConfig } from "../src/config/config.js";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import type { OpenClawConfig } from "../../../config/config.js";
 import {
   addChannelAllowFromStoreEntry,
   readChannelAllowFromStore,
-} from "../src/pairing/pairing-store.js";
-import { collectChannelSecurityFindingsCore } from "../src/security/audit-channel.js";
-import { closeOpenClawStateDatabaseForTest } from "../src/state/openclaw-state-db.js";
-import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
+} from "../../../pairing/pairing-store.js";
+import { collectChannelSecurityFindingsCore } from "../../../security/audit-channel.js";
+import { closeOpenClawStateDatabaseForTest } from "../../../state/openclaw-state-db.js";
+import type { ChannelPlugin } from "../types.plugin.js";
+import { getBundledChannelPluginAsync } from "./test-helpers/bundled-channel-plugin-loader.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-const feishuAuditPlugin: ChannelPlugin = {
-  id: feishuPlugin.id,
-  meta: feishuPlugin.meta,
-  capabilities: feishuPlugin.capabilities,
-  config: feishuPlugin.config,
-  security: feishuPlugin.security,
-};
+let feishuPlugin: ChannelPlugin;
 
 function auditFeishu(cfg: OpenClawConfig) {
-  return collectChannelSecurityFindingsCore({ cfg, plugins: [feishuAuditPlugin] });
+  return collectChannelSecurityFindingsCore({ cfg, plugins: [feishuPlugin] });
 }
 
 describe("Feishu DM security audit", () => {
+  beforeAll(async () => {
+    // This contract joins the public channel adapter with core audit, routing, and pairing state.
+    const plugin = await getBundledChannelPluginAsync("feishu");
+    if (!plugin) {
+      throw new Error("Feishu channel plugin is unavailable");
+    }
+    feishuPlugin = plugin;
+  });
+
   it("audits user_id pairing approvals only while the DM policy admits the store", async () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-feishu-audit-"));
     try {
