@@ -66,11 +66,14 @@ describe("feishuPlugin security", () => {
 
     expect(result).toMatchObject({
       policy: "open",
-      allowFrom: ["*", "feishu:user:ou_owner"],
+      allowFrom: ["*", "user:ou_owner"],
       policyPath: "channels.feishu.accounts.ops.dmPolicy",
       allowFromPath: "channels.feishu.",
     });
-    expect(result?.normalizeEntry?.("feishu:user:ou_owner")).toBe("user:ou_owner");
+    expect(result?.normalizeEntry?.("feishu:user:ou_owner")).toBe("ou_owner");
+    expect(result?.normalizeEntry?.("feishu:user:u123")).toBe("u123");
+    expect(result?.normalizeEntry?.("feishu:user:u123", "config")).toBe("u123");
+    expect(result?.normalizeEntry?.("u123", "store")).toBe("u123");
   });
 
   it("tracks a root DM policy separately from an account allowlist", () => {

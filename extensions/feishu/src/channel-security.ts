@@ -1,5 +1,6 @@
 import { DEFAULT_ACCOUNT_ID, resolveAccountEntry } from "openclaw/plugin-sdk/account-resolution";
 import { createScopedDmSecurityResolver } from "openclaw/plugin-sdk/channel-config-helpers";
+import { readChannelIngressStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   createAllowlistProviderGroupPolicyWarningCollector,
   createConditionalWarningCollector,
@@ -9,6 +10,7 @@ import type { ChannelPlugin, ClawdbotConfig } from "../runtime-api.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { normalizeFeishuAllowEntry } from "./policy.js";
 import { collectFeishuSecurityAuditFindings } from "./security-audit.js";
+import { detectIdType } from "./targets.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
 const collectFeishuSecurityWarnings = createAllowlistProviderGroupPolicyWarningCollector<{
@@ -38,9 +40,15 @@ const collectFeishuOpenGroupFindings = createConditionalWarningCollector.finding
 const resolveFeishuDmPolicyBase = createScopedDmSecurityResolver<ResolvedFeishuAccount>({
   channelKey: "feishu",
   resolvePolicy: (account) => account.config.dmPolicy,
-  resolveAllowFrom: (account) => account.config.allowFrom,
+  // The shared audit checks wildcard access before normalizing finite principals.
+  resolveAllowFrom: (account) =>
+    account.config.allowFrom?.map((entry) => normalizeFeishuAllowEntry(String(entry))),
   policyPathSuffix: "dmPolicy",
-  normalizeEntry: normalizeFeishuAllowEntry,
+  normalizeEntry: (raw) => {
+    const normalized = normalizeFeishuAllowEntry(raw);
+    // DM routing uses bare sender IDs; chat entries cannot admit a DM sender.
+    return normalized.startsWith("user:") ? normalized.slice("user:".length) : "";
+  },
 });
 
 function resolveFeishuDmFieldBasePath(params: {
@@ -92,6 +100,38 @@ const resolveFeishuDmPolicy = (params: Parameters<typeof resolveFeishuDmPolicyBa
 
 export const feishuSecurity: NonNullable<ChannelPlugin<ResolvedFeishuAccount>["security"]> = {
   resolveDmPolicy: resolveFeishuDmPolicy,
-  collectWarnings: ({ cfg, accountId }) => collectFeishuOpenGroupFindings({ cfg, accountId }),
+  collectWarnings: async ({ cfg, accountId, account }) => {
+    const findings = collectFeishuOpenGroupFindings({ cfg, accountId });
+    const dmPolicy = account.config.dmPolicy ?? "pairing";
+    if (dmPolicy === "disabled") {
+      return findings;
+    }
+    const storeAllowFrom = await readChannelIngressStoreAllowFromForDmPolicy({
+      provider: "feishu",
+      accountId: account.accountId,
+      dmPolicy,
+    });
+    const hasUserIdAlias = [...(account.config.allowFrom ?? []), ...storeAllowFrom].some(
+      (entry) => {
+        const normalized = normalizeFeishuAllowEntry(String(entry));
+        return (
+          normalized.startsWith("user:") &&
+          detectIdType(normalized.slice("user:".length)) === "user_id"
+        );
+      },
+    );
+    if (hasUserIdAlias) {
+      findings.push({
+        checkId: `channels.feishu.dm.routing_unverified.${account.accountId}`,
+        severity: "warn",
+        title: "Feishu DM routing is unverified for user_id aliases",
+        detail:
+          "AllowFrom or pairing entries using user_id aliases cannot be mapped offline to sender open_ids, so exact DM bindings and session isolation cannot be verified for those senders.",
+        remediation:
+          "Use ou_ open_id values in allowFrom or pairing approvals and matching direct peer bindings when verifying DM session isolation.",
+      });
+    }
+    return findings;
+  },
   collectAuditFindings: ({ cfg }) => collectFeishuSecurityAuditFindings({ cfg }),
 };
