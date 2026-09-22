@@ -6,6 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { placementReader, workerPlacement } from "./server.sessions.archive.test-helpers.js";
 import { embeddedRunMock, writeSessionStore } from "./test-helpers.js";
 import {
   directSessionReq,
@@ -36,72 +37,6 @@ afterEach(async () => {
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
 });
-
-function workerPlacement(params: {
-  sessionId: string;
-  sessionKey: string;
-  state: WorkerSessionPlacementRecord["state"];
-  agentId?: string;
-  environmentId?: string | null;
-}): WorkerSessionPlacementRecord {
-  return {
-    sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
-    agentId: params.agentId ?? "main",
-    executionMode: "worker-turn",
-    state: params.state,
-    generation: 2,
-    turnClaim: null,
-    createdAtMs: 1,
-    updatedAtMs: 2,
-    stateChangedAtMs: 2,
-    environmentId:
-      params.environmentId !== undefined
-        ? params.environmentId
-        : params.state === "local" || params.state === "requested"
-          ? null
-          : "worker-environment",
-    activeOwnerEpoch: ["active", "draining", "reconciling", "reclaimed", "failed"].includes(
-      params.state,
-    )
-      ? 1
-      : null,
-    workspaceBaseManifestRef:
-      params.state === "local" ||
-      params.state === "requested" ||
-      params.state === "provisioning" ||
-      params.state === "syncing"
-        ? null
-        : "manifest-ref",
-    remoteWorkspaceDir:
-      params.state === "local" ||
-      params.state === "requested" ||
-      params.state === "provisioning" ||
-      params.state === "syncing"
-        ? null
-        : "/workspace",
-    workerBundleHash:
-      params.state === "local" || params.state === "requested" || params.state === "provisioning"
-        ? null
-        : "bundle-hash",
-    lastTranscriptAckCursor: null,
-    lastLiveEventAckCursor: null,
-    recoveryError: params.state === "failed" ? "worker recovery stopped" : null,
-  } as WorkerSessionPlacementRecord;
-}
-
-function placementReader(current: () => WorkerSessionPlacementRecord | undefined) {
-  return {
-    getMany(sessionIds: readonly string[]) {
-      const placement = current();
-      return new Map(
-        placement && sessionIds.includes(placement.sessionId)
-          ? [[placement.sessionId, placement]]
-          : [],
-      );
-    },
-  };
-}
 
 test.each([false, true])(
   "sessions.patch archives past queued maintenance and explains concurrent requests (cleanup fails=%s)",
@@ -324,18 +259,30 @@ test("sessions.patch reclaims the exact active cloud placement before archive me
     },
   );
 
-  await reclaimStarted.promise;
-  expect(reclaim).toHaveBeenCalledOnce();
-  expect(reclaim).toHaveBeenCalledWith(
-    { sessionId, sessionKey, agentId: "main" },
-    expect.any(Function),
-    expect.any(Function),
-  );
-  expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
-  reclaimGate.resolve();
+  try {
+    await Promise.race([
+      reclaimStarted.promise,
+      archive.then((result) => {
+        expect(result).toMatchObject({ ok: true });
+        throw new Error("archive completed before worker reclaim");
+      }),
+    ]);
+    expect(reclaim).toHaveBeenCalledOnce();
+    expect(reclaim).toHaveBeenCalledWith(
+      { sessionId, sessionKey, agentId: "main" },
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+    reclaimGate.resolve();
 
-  await expect(archive).resolves.toMatchObject({ ok: true });
-  expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toEqual(expect.any(Number));
+    await expect(archive).resolves.toMatchObject({ ok: true });
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toEqual(expect.any(Number));
+  } finally {
+    // Join the held request before fixture teardown closes its databases.
+    reclaimGate.resolve();
+    await archive;
+  }
 });
 
 test.each(["rejected", "unavailable"] as const)(
@@ -447,7 +394,8 @@ test.each(["active", "failed"] as const)(
     await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
     let placement = workerPlacement({ sessionId, sessionKey, state });
     const drainGate = createDeferredCore();
-    const drainStarted = vi.fn();
+    const drainEntered = createDeferredCore();
+    const drainStarted = vi.fn(() => drainEntered.resolve());
     const release = vi.fn();
     const reclaim = vi.fn();
 
@@ -466,21 +414,34 @@ test.each(["active", "failed"] as const)(
       },
     );
 
-    await vi.waitFor(() => expect(drainStarted).toHaveBeenCalledOnce());
-    placement = workerPlacement({
-      sessionId,
-      sessionKey: "agent:main:replacement-placement",
-      state: "active",
-    });
-    drainGate.resolve();
+    try {
+      await Promise.race([
+        drainEntered.promise,
+        archive.then((result) => {
+          expect(result).toMatchObject({ ok: true });
+          throw new Error("archive completed before runtime drain");
+        }),
+      ]);
+      expect(drainStarted).toHaveBeenCalledOnce();
+      placement = workerPlacement({
+        sessionId,
+        sessionKey: "agent:main:replacement-placement",
+        state: "active",
+      });
+      drainGate.resolve();
 
-    await expect(archive).resolves.toMatchObject({
-      ok: false,
-      error: { code: "UNAVAILABLE", retryable: true },
-    });
-    expect(reclaim).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledOnce();
-    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+      await expect(archive).resolves.toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", retryable: true },
+      });
+      expect(reclaim).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+      expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+    } finally {
+      // Release and join even when a phase assertion fails, before fixture reset.
+      drainGate.resolve();
+      await archive;
+    }
   },
 );
 
