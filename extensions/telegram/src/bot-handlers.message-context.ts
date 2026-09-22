@@ -19,6 +19,7 @@ import type {
   TelegramMessageContextOptions,
   TelegramPromptContextEntry,
 } from "./bot-message-context.types.js";
+import { resolveTelegramDmModelDefault } from "./bot-model-default.js";
 import {
   buildSenderName,
   getTelegramTextParts,
@@ -239,12 +240,21 @@ export function createTelegramMessageSessionRuntime({
       defaultProvider: defaultModel.provider,
     });
     if (storedOverride || useDmThreadSession) {
+      const selection =
+        storedOverride ??
+        resolveTelegramDmModelDefault({
+          cfg: params.runtimeCfg,
+          agentId: route.agentId,
+          chatId: params.chatId,
+          senderId: params.senderId,
+          defaultModel,
+        });
       return {
         agentId: route.agentId,
         sessionEntry: entry,
         sessionKey,
         storePath,
-        model: `${storedOverride?.provider ?? defaultModel.provider}/${storedOverride?.model ?? defaultModel.model}`,
+        model: `${selection.provider ?? defaultModel.provider}/${selection.model}`,
       };
     }
     const provider = entry?.modelProvider?.trim();
