@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   executorTestMocks,
@@ -175,7 +176,15 @@ describe("Telegram native command built-ins", () => {
     expect(menuRecord.catalog).toEqual(runtimeCatalog);
   });
 
-  it.each([
+  it.each<{
+    name: string;
+    topic: Partial<SessionEntry>;
+    channelModel?: string;
+    channelModels?: Record<string, string>;
+    model: string;
+    provider: string;
+    thinking: string;
+  }>([
     {
       name: "channel-mapped",
       topic: {},
@@ -188,6 +197,26 @@ describe("Telegram native command built-ins", () => {
       name: "channel alias with historical metadata",
       topic: { modelProvider: "anthropic", model: "claude-opus-4-7" },
       channelModel: "topic-model",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      thinking: "medium",
+    },
+    {
+      name: "prefixed channel-mapped",
+      topic: {},
+      channelModels: { "telegram:100": "topic-model" },
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      thinking: "medium",
+    },
+    {
+      name: "prefixed mapping ahead of bare and wildcard mappings",
+      topic: {},
+      channelModels: {
+        "telegram:100": "topic-model",
+        "100": "openai/gpt-5.4",
+        "*": "openai/gpt-5.5",
+      },
       provider: "anthropic",
       model: "claude-sonnet-4-6",
       thinking: "medium",
@@ -218,7 +247,7 @@ describe("Telegram native command built-ins", () => {
     },
   ])(
     "uses the effective model for a $name DM topic menu",
-    async ({ topic, provider, model, thinking, channelModel }) => {
+    async ({ topic, provider, model, thinking, channelModel, channelModels }) => {
       const cfg: OpenClawConfig = {
         agents: {
           defaults: {
@@ -235,7 +264,9 @@ describe("Telegram native command built-ins", () => {
           },
         },
       };
-      if (channelModel) {
+      if (channelModels) {
+        cfg.channels = { modelByChannel: { telegram: channelModels } };
+      } else if (channelModel) {
         cfg.channels = { modelByChannel: { telegram: { "100": channelModel } } };
       }
       sessionMocks.sessionStoreEntries.mockReturnValue({

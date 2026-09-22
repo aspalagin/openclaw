@@ -15,7 +15,7 @@ export function resolveTelegramDmModelDefault(params: {
     channel: "telegram",
     groupChatType: "direct",
     parentSessionKey: null,
-    directUserIds: [String(params.chatId), params.senderId?.toString()],
+    directUserIds: [`telegram:${params.chatId}`, params.senderId?.toString()],
   });
   if (!override) {
     return params.defaultModel;
