@@ -1,12 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { msteamsPlugin } from "../extensions/msteams/api.js";
 import type { ChannelPlugin } from "../src/channels/plugins/types.plugin.js";
-import type { OpenClawConfig } from "../src/config/config.js";
+import type { MSTeamsConfig, OpenClawConfig } from "../src/config/config.js";
+import {
+  addChannelAllowFromStoreEntry,
+  readChannelAllowFromStore,
+} from "../src/pairing/pairing-store.js";
 import { collectChannelSecurityFindingsCore } from "../src/security/audit-channel.js";
+import { closeOpenClawStateDatabaseForTest } from "../src/state/openclaw-state-db.js";
+import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
 
-vi.mock("../src/channels/message-access/store-allow-from.js", () => ({
-  readChannelIngressStoreAllowFromForDmPolicy: async () => [],
-}));
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 const msteamsAuditPlugin: ChannelPlugin = {
   id: msteamsPlugin.id,
@@ -27,6 +31,59 @@ const conversationEntries = [
   "8:orgid:opaque-account",
   "conversation:Alice Example",
 ];
+
+it("audits persisted Bot Framework approvals without admitting inert configured entries", async () => {
+  vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-msteams-audit-"));
+  const firstId = "29:approved-first";
+  const secondId = "29:approved-second";
+  const msteamsConfig: MSTeamsConfig = {
+    authType: "secret",
+    appId: "fixture-app",
+    appPassword: "fixture-password",
+    tenantId: "fixture-tenant",
+    dmPolicy: "pairing",
+    allowFrom: [firstId],
+    dangerouslyAllowNameMatching: false,
+  };
+  const cfg: OpenClawConfig = {
+    agents: { entries: { main: {} } },
+    session: { dmScope: "main" },
+    channels: { msteams: msteamsConfig },
+  };
+  const audit = async (locked: boolean, collision: boolean) => {
+    const findings = await collectChannelSecurityFindingsCore({
+      cfg,
+      plugins: [msteamsAuditPlugin],
+    });
+    expect(findings.some((finding) => finding.checkId === "channels.msteams.dm.locked")).toBe(
+      locked,
+    );
+    expect(findings.some((finding) => finding.checkId.includes(".dm.session_collision."))).toBe(
+      collision,
+    );
+  };
+
+  try {
+    await audit(true, false);
+    for (const [index, entry] of [firstId, secondId].entries()) {
+      await addChannelAllowFromStoreEntry({
+        channel: "msteams",
+        accountId: "default",
+        entry,
+        pairingAdapter: msteamsPlugin.pairing,
+      });
+      await expect(readChannelAllowFromStore("msteams", process.env, "default")).resolves.toEqual(
+        [firstId, secondId].slice(0, index + 1),
+      );
+      await audit(false, index === 1);
+    }
+    msteamsConfig.dmPolicy = "allowlist";
+    await audit(true, false);
+  } finally {
+    closeOpenClawStateDatabaseForTest();
+    vi.unstubAllEnvs();
+  }
+});
 
 describe.each([false, true])("Teams audit (name matching: %s)", (allowNameMatching) => {
   it.each([

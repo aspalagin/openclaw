@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { tryReadSecretFileSync } from "openclaw/plugin-sdk/secret-file-runtime";
 import {
   classifyMSTeamsEntryAuthentication,
+  msteamsIngressIdentity,
   normalizeMSTeamsDmPrincipal,
 } from "./ingress-identity.js";
 import { resolveMSTeamsCredentials } from "./token.js";
@@ -97,8 +98,10 @@ export function resolveMSTeamsDmPolicy({
     policy: config?.dmPolicy,
     allowFrom: config?.allowFrom,
     policyPathSuffix: "dmPolicy",
-    normalizeEntry: (raw) =>
-      normalizeMSTeamsDmPrincipal(raw, config?.dangerouslyAllowNameMatching === true),
+    normalizeEntry: (raw, source) =>
+      source === "store"
+        ? (msteamsIngressIdentity.normalize(raw) ?? "")
+        : normalizeMSTeamsDmPrincipal(raw, config?.dangerouslyAllowNameMatching === true),
     classifyEntryAuthentication: classifyMSTeamsEntryAuthentication,
   });
 }
