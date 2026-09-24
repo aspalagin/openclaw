@@ -363,11 +363,11 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
       setQueuedEntryState(tmpDir, id, { retryCount: 0, enqueuedAt: index + 1 });
     }
     const pendingBefore = await loadPendingDeliveries(tmpDir);
+    const { promise: firstStarted, resolve: signalFirstStarted } = createDeferred();
     const { promise: firstBlocked, resolve: releaseFirst } = createDeferred();
-    const firstStarted = createDeferred();
     const deliver = vi.fn<DeliverFn>(async () => {
       if (deliver.mock.calls.length === 1) {
-        firstStarted.resolve();
+        signalFirstStarted();
         await firstBlocked;
       }
     });
@@ -384,7 +384,7 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
       shouldContinue: () => shouldContinue,
     });
     try {
-      await racePromiseWithAbortSignal(Promise.race([firstStarted.promise, drain]), signal);
+      await racePromiseWithAbortSignal(Promise.race([firstStarted, drain]), signal);
       expect(deliver).toHaveBeenCalledOnce();
     } finally {
       shouldContinue = false;
@@ -572,10 +572,10 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
   it("does not re-deliver an entry already being recovered at startup", async ({ signal }) => {
     const log = createRecoveryLog();
     const startupLog = createRecoveryLog();
+    const { promise: deliveryStarted, resolve: signalDeliveryStarted } = createDeferred();
     const { promise: deliverPromise, resolve: resolveDeliver } = createDeferred();
-    const deliveryStarted = createDeferred();
     const deliver = vi.fn<DeliverFn>(async () => {
-      deliveryStarted.resolve();
+      signalDeliveryStarted();
       await deliverPromise;
     });
 
@@ -593,10 +593,7 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
     });
 
     try {
-      await racePromiseWithAbortSignal(
-        Promise.race([deliveryStarted.promise, startupRecovery]),
-        signal,
-      );
+      await racePromiseWithAbortSignal(Promise.race([deliveryStarted, startupRecovery]), signal);
       expect(deliver).toHaveBeenCalledTimes(1);
 
       await drainAcct1DirectChatReconnect({ deliver, log, stateDir: tmpDir });
@@ -666,13 +663,13 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
   }) => {
     const log = createRecoveryLog();
     const startupLog = createRecoveryLog();
+    const { promise: blockerStarted, resolve: signalBlockerStarted } = createDeferred();
     const { promise: blocker, resolve: releaseBlocker } = createDeferred();
-    const blockerStarted = createDeferred();
     const deliveredTargets: string[] = [];
     const deliver = vi.fn<DeliverFn>(async ({ to }) => {
       deliveredTargets.push(to);
       if (to === "+1000") {
-        blockerStarted.resolve();
+        signalBlockerStarted();
         await blocker;
       }
     });
@@ -696,16 +693,10 @@ describe("drainPendingDeliveriesCore for reconnect", () => {
     });
 
     try {
-      await racePromiseWithAbortSignal(
-        Promise.race([blockerStarted.promise, startupRecovery]),
-        signal,
+      await racePromiseWithAbortSignal(Promise.race([blockerStarted, startupRecovery]), signal);
+      expect(deliver).toHaveBeenCalledWith(
+        expect.objectContaining({ channel: "demo-channel-a", to: "+1000" }),
       );
-      const deliveries = deliver.mock.calls.map(([delivery]) => requireRecord(delivery));
-      expect(
-        deliveries.some(
-          (delivery) => delivery.channel === "demo-channel-a" && delivery.to === "+1000",
-        ),
-      ).toBe(true);
 
       await drainAcct1DirectChatReconnect({ deliver, log, stateDir: tmpDir });
     } finally {
