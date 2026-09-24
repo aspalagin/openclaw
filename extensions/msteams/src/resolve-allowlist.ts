@@ -63,14 +63,10 @@ function uniqueItemsById<T extends { id?: string }>(items: T[]): T[] {
   return [...byId.values()];
 }
 
-function findExactTeams(items: GraphGroup[], query: string): GraphGroup[] {
-  const normalized = normalizeExactMatch(query);
-  return uniqueItemsById(
-    items.filter((item) => normalizeExactMatch(item.displayName) === normalized),
-  );
-}
-
-function findExactChannels(items: GraphChannel[], query: string): GraphChannel[] {
+function findExactNames<T extends { id?: string; displayName?: string }>(
+  items: T[],
+  query: string,
+): T[] {
   const normalized = normalizeExactMatch(query);
   return uniqueItemsById(
     items.filter((item) => normalizeExactMatch(item.displayName) === normalized),
@@ -312,7 +308,7 @@ export async function resolveMSTeamsChannelAllowlist(params: {
         if (result.truncated) {
           return { input, resolved: false, note: "team lookup incomplete" };
         }
-        const exactTeams = findExactTeams(result.items, team);
+        const exactTeams = findExactNames(result.items, team);
         const [exactTeam] = exactTeams;
         if (!exactTeam) {
           return { input, resolved: false, note: "team not found" };
@@ -347,7 +343,7 @@ export async function resolveMSTeamsChannelAllowlist(params: {
       } catch {
         return { input, resolved: false, note: "channel lookup failed" };
       }
-      const generalChannels = findExactChannels(teamChannels, "general");
+      const generalChannels = findExactNames(teamChannels, "general");
       if (params.teamIdMode !== "graph" && generalChannels.length !== 1) {
         return {
           input,
@@ -371,7 +367,7 @@ export async function resolveMSTeamsChannelAllowlist(params: {
         };
       }
       const channelById = teamChannels.find((item) => item.id === channel);
-      const exactChannels = channelById ? [channelById] : findExactChannels(teamChannels, channel);
+      const exactChannels = channelById ? [channelById] : findExactNames(teamChannels, channel);
       if (exactChannels.length === 0) {
         return { input, resolved: false, note: "channel not found" };
       }

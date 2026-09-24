@@ -39,6 +39,7 @@ import {
   type MemoryIndexMeta,
   type MemoryIndexProviderIdentity,
 } from "./manager-reindex-state.js";
+import { MEMORY_INDEX_META_KEY, readMemoryIndexMetadata } from "./manager-retrieval-read.js";
 import { MemorySyncOutcomeLedger } from "./manager-sync-outcome.js";
 import { memoryTableExists, requiresMemoryVectorRebuild } from "./manager-vector-rebuild-state.js";
 import { buildMemorySourceFilter } from "./source-filter.js";
@@ -70,7 +71,6 @@ export type MemoryReindexRetryState = {
   sessionsDirtyFiles: Set<string>;
 };
 
-export const MEMORY_INDEX_META_KEY = "memory_index_meta_v1";
 const META_KEY = MEMORY_INDEX_META_KEY;
 const VECTOR_TABLE = MEMORY_INDEX_VECTOR_TABLE;
 const LEGACY_VECTOR_TABLE = "chunks_vec";
@@ -112,6 +112,7 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   protected fallbackReason?: string;
   protected intervalTimer: NodeJS.Timeout | null = null;
   protected dirty = false;
+  protected memoryWatchGeneration = 0;
   // A success clears only the failure visible when it started. This keeps a
   // concurrent failure visible even when older or no-op work settles later.
   protected readonly syncOutcomes = new MemorySyncOutcomeLedger();
@@ -159,6 +160,11 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
     deferIndex?: boolean;
     prefixIndexItems?: MemoryIndexWorkItem[];
   }): Promise<MemorySourceSyncPlan>;
+
+  protected markMemoryWatchDirty(): void {
+    this.memoryWatchGeneration += 1;
+    this.dirty = true;
+  }
 
   protected async withManagerOperation<T>(run: () => Promise<T>): Promise<T> {
     this.memoryFiles?.assertCurrent();
@@ -508,8 +514,9 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
       this.markConfiguredSourcesForFullReindex();
       return false;
     }
-    if (this.vector.available !== null) {
-      return this.vector.available;
+    // Child KNN proves capability, but this connection still needs its own extension setup.
+    if (this.vector.available === false) {
+      return false;
     }
     if (!this.vector.enabled) {
       this.vector.available = false;
@@ -560,7 +567,7 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
     });
   }
 
-  private markConfiguredSourcesForFullReindex(): void {
+  protected markConfiguredSourcesForFullReindex(): void {
     // This flag selects the shadow-reindex path even for a sessions-only index;
     // the rebuild itself still filters work through the configured sources.
     this.memoryFullRetryDirty = true;
@@ -639,21 +646,9 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   }
 
   protected readMeta(): MemoryIndexMeta | null {
-    const row = this.db
-      .prepare(`SELECT value FROM memory_index_meta WHERE key = ?`)
-      .get(META_KEY) as { value: string } | undefined;
-    if (!row?.value) {
-      this.database.lastMetaSerialized = null;
-      return null;
-    }
-    try {
-      const parsed = JSON.parse(row.value) as MemoryIndexMeta;
-      this.database.lastMetaSerialized = row.value;
-      return parsed;
-    } catch {
-      this.database.lastMetaSerialized = null;
-      return null;
-    }
+    const { meta, serialized } = readMemoryIndexMetadata(this.db);
+    this.database.lastMetaSerialized = serialized;
+    return meta;
   }
 
   protected writeMeta(meta: MemoryIndexMeta) {
