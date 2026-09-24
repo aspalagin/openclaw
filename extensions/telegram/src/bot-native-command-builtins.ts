@@ -56,20 +56,6 @@ type TelegramCommandMenuModelContext = {
   fastMode?: SessionEntry["fastMode"];
 };
 
-function buildTelegramCommandMenuModelContext(params: {
-  provider: string;
-  model: string;
-  thinkingLevel?: string;
-  fastMode?: SessionEntry["fastMode"];
-}): TelegramCommandMenuModelContext {
-  return {
-    provider: params.provider,
-    model: params.model,
-    ...(params.thinkingLevel ? { thinkingLevel: params.thinkingLevel } : {}),
-    ...(params.fastMode !== undefined ? { fastMode: params.fastMode } : {}),
-  };
-}
-
 function resolveTelegramCommandMenuModelContext(
   params: TelegramCommandModelParams,
 ): TelegramCommandMenuModelContext {
@@ -84,12 +70,10 @@ function resolveTelegramCommandMenuModelContext(
     const fastMode = entry?.fastMode;
     let context: TelegramCommandMenuModelContext;
     if (entry?.modelOverrideSource === "auto" && normalizeOptionalString(entry.modelOverride)) {
-      context = buildTelegramCommandMenuModelContext({
+      context = {
         provider: primaryModel.provider,
         model: primaryModel.model,
-        ...(thinkingLevel ? { thinkingLevel } : {}),
-        ...(fastMode !== undefined ? { fastMode } : {}),
-      });
+      };
     } else {
       const override = resolveStoredModelOverride({
         sessionEntry: entry,
@@ -99,12 +83,10 @@ function resolveTelegramCommandMenuModelContext(
         defaultProvider: defaultModel.provider,
       });
       if (override?.model || params.parentSessionKey === null) {
-        context = buildTelegramCommandMenuModelContext({
+        context = {
           provider: override ? override.provider || defaultModel.provider : primaryModel.provider,
           model: override?.model ?? primaryModel.model,
-          ...(thinkingLevel ? { thinkingLevel } : {}),
-          ...(fastMode !== undefined ? { fastMode } : {}),
-        });
+        };
       } else {
         const provider =
           normalizeOptionalString(entry?.providerOverride) ??
@@ -114,13 +96,13 @@ function resolveTelegramCommandMenuModelContext(
         context = {
           ...(provider ? { provider } : {}),
           ...(model ? { model } : {}),
-          ...(thinkingLevel ? { thinkingLevel } : {}),
-          ...(fastMode !== undefined ? { fastMode } : {}),
         };
       }
     }
     return {
       ...context,
+      ...(thinkingLevel ? { thinkingLevel } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
       agentRuntime: resolveEffectiveAgentRuntime({
         cfg: params.cfg,
         provider: context.provider ?? primaryModel.provider,
