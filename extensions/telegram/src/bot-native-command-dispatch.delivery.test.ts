@@ -102,7 +102,7 @@ beforeEach(() => {
 describe("Telegram typed command delivery", () => {
   it("replies to the selected photo quote for a native command", async () => {
     harness.replySpy.mockResolvedValue({ text: "Checked the photo.", replyToId: "30101" });
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: {
         telegram: {
@@ -155,7 +155,7 @@ describe("Telegram typed command delivery", () => {
         command: { name: "fast", pluginId: "fast-controls" },
         args: "on",
       });
-      const bot = createBot();
+      const bot = await createBot();
       await bot.handleUpdate({ update_id: 3004, message: commandMessage("/fast on") });
       expect(harness.replySpy).toHaveBeenCalledOnce();
       expect(harness.replySpy.mock.calls[0]?.[0]).toMatchObject({
@@ -266,7 +266,9 @@ describe("Telegram native argument menus", () => {
         sessionKey: "agent:main:main:thread:42001:77",
         entry: { sessionId: "menu-topic", updatedAt: 2, ...topic },
       });
-      await createBot(true, true, cfg, true).handleUpdate({
+      await (
+        await createBot(true, true, cfg, true)
+      ).handleUpdate({
         update_id: 3110,
         message: { ...commandMessage("/think"), message_thread_id: 77 },
       });
@@ -311,7 +313,9 @@ describe("Telegram native argument menus", () => {
           model: "gpt-5.5",
         },
       });
-      await createBot(true, true, cfg, Boolean(threadId)).handleUpdate({
+      await (
+        await createBot(true, true, cfg, Boolean(threadId))
+      ).handleUpdate({
         update_id: 3111,
         message: { ...commandMessage("/fast"), message_thread_id: threadId },
       });
@@ -353,7 +357,9 @@ describe("Telegram native argument menus", () => {
       sessionKey: "agent:main:main:thread:42001:77",
       entry: { sessionId: "topic", updatedAt: 2, parentSessionKey: "agent:main:main" },
     });
-    await createBot(true, true, cfg, true).handleUpdate({
+    await (
+      await createBot(true, true, cfg, true)
+    ).handleUpdate({
       update_id: 3101,
       message: { ...commandMessage("/think"), message_thread_id: 77 },
     });
@@ -387,7 +393,9 @@ describe("Telegram native argument menus", () => {
         },
         bindings: [{ agentId: "alpha", match: { channel: "telegram", accountId: "default" } }],
       });
-      await createBot(true, true, cfg, true).handleUpdate({
+      await (
+        await createBot(true, true, cfg, true)
+      ).handleUpdate({
         update_id: 3102,
         message: { ...commandMessage("/think"), message_thread_id: 77 },
       });
@@ -540,7 +548,9 @@ describe("Telegram registered plugin delivery", () => {
       text: "Choose a deployment",
       channelData: { telegram: { buttons: [[{ text: "Deploy", callback_data: "deploy" }]] } },
     }));
-    await createBot(true, true, pluginConfig()).handleUpdate({
+    await (
+      await createBot(true, true, pluginConfig())
+    ).handleUpdate({
       update_id: 3200,
       message: commandMessage("/plug"),
     });
@@ -584,7 +594,7 @@ describe("Telegram registered plugin delivery", () => {
     };
     let mediaUrl = allowed;
     registerCommand(async () => ({ text: "Workspace report", mediaUrl }));
-    const bot = createBot(true, true, cfg);
+    const bot = await createBot(true, true, cfg);
     await bot.handleUpdate({ update_id: 3210, message: groupCommand("/plug", 77) });
     expect(effects().map(({ method }) => method)).toEqual([
       "sendMessage",
@@ -635,7 +645,9 @@ describe("Telegram registered plugin delivery", () => {
               },
             };
       registerCommand(async () => result);
-      await createBot(true, true, cfg).handleUpdate({
+      await (
+        await createBot(true, true, cfg)
+      ).handleUpdate({
         update_id: 3201,
         message: { ...commandMessage("/plug"), message_id: 32101 },
       });
@@ -666,7 +678,9 @@ describe("Telegram registered plugin delivery", () => {
     const cfg = pluginConfig();
     cfg.channels!.telegram!.silentErrorReplies = true;
     registerCommand(async () => ({ text: "Deployment failed", isError: true }));
-    await createBot(true, true, cfg).handleUpdate({
+    await (
+      await createBot(true, true, cfg)
+    ).handleUpdate({
       update_id: 3202,
       message: commandMessage("/plug"),
     });
@@ -706,7 +720,9 @@ describe("Telegram registered plugin delivery", () => {
               },
             },
       );
-      await createBot(true, true, cfg).handleUpdate({
+      await (
+        await createBot(true, true, cfg)
+      ).handleUpdate({
         update_id: 3203,
         message: commandMessage("/plug"),
       });
@@ -733,7 +749,9 @@ describe("Telegram registered plugin delivery", () => {
                 },
         { progress: false },
       );
-      await createBot(true, true, pluginConfig()).handleUpdate({
+      await (
+        await createBot(true, true, pluginConfig())
+      ).handleUpdate({
         update_id: 3204,
         message: commandMessage("/plug"),
       });
@@ -761,7 +779,9 @@ describe("Telegram registered plugin delivery", () => {
       },
     );
     const message = groupCommand("/plug unexpected");
-    await createBot(true, true, pluginConfig()).handleUpdate({
+    await (
+      await createBot(true, true, pluginConfig())
+    ).handleUpdate({
       update_id: 3205,
       message: {
         ...message,
@@ -830,7 +850,9 @@ describe("Telegram registered plugin delivery", () => {
         },
         { progress: false },
       );
-      await createBot(true, true, cfg, kind === "DM-topic").handleUpdate({
+      await (
+        await createBot(true, true, cfg, kind === "DM-topic")
+      ).handleUpdate({
         update_id: 3206,
         message:
           kind === "forum"
