@@ -691,6 +691,7 @@ describe("cli program (nodes basics)", () => {
   });
 
   it("keeps explicit gateway options in node reapproval guidance without leaking auth", async () => {
+    vi.stubEnv("OPENCLAW_PROFILE", "work");
     programGatewayCallMock.mockResolvedValue({
       ts: Date.now(),
       nodes: [
@@ -717,7 +718,9 @@ describe("cli program (nodes basics)", () => {
     ]);
 
     const output = getRuntimeOutput();
-    expect(output).toContain("openclaw nodes approve request-reapproval --timeout 3000");
+    expect(output).toContain(
+      "openclaw --profile work nodes approve request-reapproval --timeout 3000",
+    );
     expect(output).toContain("Reuse the same connection options when rerunning: --url, --token.");
     expect(output).not.toContain("gateway-user");
     expect(output).not.toContain("url-secret");
@@ -961,7 +964,7 @@ describe("cli program (nodes basics)", () => {
     });
   });
 
-  it("runs nodes invoke and calls node.invoke", async () => {
+  it.each([undefined, "idem-test"])("runs nodes invoke with idempotency key %s", async (key) => {
     mockGatewayWithIosNodeListAnd("node.invoke", {
       ok: true,
       nodeId: "ios-node",
@@ -978,6 +981,7 @@ describe("cli program (nodes basics)", () => {
       "canvas.eval",
       "--params",
       '{"javaScript":"1+1"}',
+      ...(key === undefined ? [] : ["--idempotency-key", key]),
     ]);
 
     expectGatewayRequest("node.list", {});
@@ -986,7 +990,11 @@ describe("cli program (nodes basics)", () => {
       command: "canvas.eval",
       params: { javaScript: "1+1" },
       timeoutMs: 15000,
-      idempotencyKey: "idem-test",
+      idempotencyKey:
+        key ??
+        expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+        ),
     });
     const invokeRequest = gatewayRequests().find((candidate) => candidate.method === "node.invoke");
     expect(invokeRequest?.clientName).toBe("cli");

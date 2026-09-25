@@ -1,9 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { InputFile } from "grammy";
+import type { MarkdownTableMode } from "openclaw/plugin-sdk/config-contracts";
 import { extensionForMime } from "openclaw/plugin-sdk/media-mime";
 import { isGifMedia, kindFromMime } from "openclaw/plugin-sdk/media-runtime";
 import type { OutboundMediaAccess } from "openclaw/plugin-sdk/media-runtime";
-import { isVoiceNoteMedia } from "./rich-block-model.js";
-import { telegramRichMediaReference, type TelegramInputRichMessageMedia } from "./rich-message.js";
+import { findMarkdownImageSpans } from "openclaw/plugin-sdk/text-chunking";
+import { inputRichBlockMediaSources, isVoiceNoteMedia } from "./rich-block-model.js";
+import {
+  buildTelegramRichMarkdownPlan,
+  telegramRichMediaReference,
+  type TelegramInputRichMessageMedia,
+} from "./rich-message.js";
 import { buildOutboundMediaLoadOptions, getImageMetadata, loadWebMedia } from "./send.runtime.js";
 
 const MAX_RICH_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -12,8 +19,6 @@ const MAX_TELEGRAM_PHOTO_ASPECT_RATIO = 20;
 const LOCAL_MEDIA_SOURCE_RE = /^(?:(?:[fF][iI][lL][eE]:\/\/)?\/(?!\/)|[A-Za-z]:[\\/])/u;
 const LOCAL_MEDIA_TAG_RE =
   /<(img|video|audio)\b([^>]*?)\bsrc\s*=\s*(?:(["'])([^"']+)\3|([^\s"'=<>`]+))([^>]*)>/giu;
-const LOCAL_MARKDOWN_IMAGE_RE =
-  /!\[([^\]\n]*)\]\(((?:(?:[fF][iI][lL][eE]:\/\/)?\/(?!\/)|[A-Za-z]:[\\/])[^\s)"]+)(?:\s+"([^"\n]*)")?\)/gu;
 
 type RichMediaType = "photo" | "video" | "audio" | "voice_note";
 type RichMediaElementType = Exclude<RichMediaType, "voice_note">;
@@ -30,7 +35,7 @@ function unsupportedRichLocalMediaError(source: string): Error {
   );
 }
 
-export function isTelegramRichLocalMediaSource(source: string): boolean {
+function isTelegramRichLocalMediaSource(source: string): boolean {
   return LOCAL_MEDIA_SOURCE_RE.test(source.trim());
 }
 
@@ -81,20 +86,23 @@ async function isRichPhoto(media: { buffer: Buffer }): Promise<boolean> {
 }
 
 function buildFigure(
-  media: TelegramInputRichMessageMedia,
+  source: string,
+  type: RichMediaType,
   params?: { alt?: string; caption?: string },
 ) {
   const escape = (value: string) =>
     value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
   const alt = params?.alt ? ` alt="${escape(params.alt)}"` : "";
   const caption = params?.caption ? `<figcaption>${escape(params.caption)}</figcaption>` : "";
-  const elementType = richMediaElementType(media.media.type);
+  const elementType = richMediaElementType(type);
   const tag = elementType === "photo" ? "img" : elementType;
-  return `<figure><${tag} src="${telegramRichMediaReference(media)}"${alt}/>${caption}</figure>`;
+  return `<figure><${tag} src="${source}"${alt}/>${caption}</figure>`;
 }
 
 export async function resolveTelegramRichLocalMedia(params: {
   text: string;
+  tableMode?: MarkdownTableMode;
+  skipEntityDetection?: boolean;
   mediaUrls?: readonly string[];
   maxBytes?: number;
   mediaAccess?: OutboundMediaAccess;
@@ -158,63 +166,132 @@ export async function resolveTelegramRichLocalMedia(params: {
     return await pending;
   };
 
-  let result = "";
-  let cursor = 0;
+  // Discovery is text-only. The canonical rich parser decides which candidates
+  // are media; code, unsupported HTML, and other literal examples never reach I/O.
+  let prefix: string;
+  do {
+    prefix = `local_${randomUUID().replaceAll("-", "")}_`;
+  } while (params.text.includes(prefix));
+  type Candidate = {
+    start: number;
+    end: number;
+    source: string;
+    type: RichMediaElementType;
+    reference: string;
+    render: (reference: string, type: RichMediaType) => string;
+    matchElement?: boolean;
+  };
+  const candidates: Candidate[] = [];
   for (const match of params.text.matchAll(LOCAL_MEDIA_TAG_RE)) {
     const [raw, tag = "", before = "", quote = "", quotedSource, unquotedSource, after = ""] =
       match;
     const source = quotedSource ?? unquotedSource ?? "";
-    const index = match.index ?? 0;
-    result += params.text.slice(cursor, index);
-    cursor = index + raw.length;
     if (!isTelegramRichLocalMediaSource(source)) {
-      result += raw;
       continue;
     }
-    const resolved = await resolve(source);
-    if (!resolved) {
-      throw unsupportedRichLocalMediaError(source);
-    }
-    if (richMediaElementType(resolved.media.type) !== richMediaTypeForTag(tag)) {
-      throw new Error(`Telegram rich media element does not match local file type: ${source}`);
-    }
+    const type = richMediaTypeForTag(tag);
     const outputQuote = quote || '"';
-    result += `<${tag}${before}src=${outputQuote}${telegramRichMediaReference(resolved)}${outputQuote}${after}>`;
+    candidates.push({
+      start: match.index,
+      end: match.index + raw.length,
+      source,
+      type,
+      reference: `tg://${type}?id=${prefix}${candidates.length}`,
+      render: (reference) =>
+        `<${tag}${before}src=${outputQuote}${reference}${outputQuote}${after}>`,
+      matchElement: true,
+    });
   }
-  result += params.text.slice(cursor);
-
+  for (const { start, end, destination: source, alt, title } of findMarkdownImageSpans(
+    params.text,
+  )) {
+    if (
+      !isTelegramRichLocalMediaSource(source) ||
+      candidates.some((candidate) => start < candidate.end && end > candidate.start)
+    ) {
+      continue;
+    }
+    candidates.push({
+      start,
+      end,
+      source,
+      type: "photo",
+      reference: `tg://photo?id=${prefix}${candidates.length}`,
+      render: (reference, type) => buildFigure(reference, type, { alt, caption: title }),
+    });
+  }
+  candidates.sort((a, b) => a.start - b.start);
+  let discovery = "";
+  let cursor = 0;
+  for (const candidate of candidates) {
+    discovery += params.text.slice(cursor, candidate.start);
+    discovery += candidate.render(candidate.reference, candidate.type);
+    cursor = candidate.end;
+  }
+  discovery += params.text.slice(cursor);
+  const accepted = candidates.length
+    ? inputRichBlockMediaSources(
+        buildTelegramRichMarkdownPlan(discovery, {
+          tableMode: params.tableMode,
+          skipEntityDetection: params.skipEntityDetection,
+        }).richMessage.blocks,
+      )
+    : new Set<string>();
   let markdown = "";
   cursor = 0;
-  for (const match of result.matchAll(LOCAL_MARKDOWN_IMAGE_RE)) {
-    const [raw, alt, source = "", caption] = match;
-    const index = match.index ?? 0;
-    markdown += result.slice(cursor, index);
-    cursor = index + raw.length;
-    const resolved = await resolve(source);
-    if (!resolved) {
-      throw unsupportedRichLocalMediaError(source);
+  for (const candidate of candidates) {
+    markdown += params.text.slice(cursor, candidate.start);
+    cursor = candidate.end;
+    if (!accepted.has(candidate.reference)) {
+      markdown += params.text.slice(candidate.start, candidate.end);
+      continue;
     }
-    markdown += buildFigure(resolved, { alt, caption });
+    const resolved = await resolve(candidate.source);
+    if (!resolved) {
+      throw unsupportedRichLocalMediaError(candidate.source);
+    }
+    if (candidate.matchElement && richMediaElementType(resolved.media.type) !== candidate.type) {
+      throw new Error(
+        `Telegram rich media element does not match local file type: ${candidate.source}`,
+      );
+    }
+    markdown += candidate.render(telegramRichMediaReference(resolved), resolved.media.type);
   }
-  markdown += result.slice(cursor);
+  markdown += params.text.slice(cursor);
 
-  const unconsumedMediaUrls: string[] = [];
-  const appended: string[] = [];
+  const appended: Array<{ source: string; reference: string; figure: string }> = [];
   for (const source of params.mediaUrls ?? []) {
     if (!isTelegramRichLocalMediaSource(source)) {
-      unconsumedMediaUrls.push(source);
       continue;
     }
     const resolved = await resolve(source);
     if (!resolved) {
-      unconsumedMediaUrls.push(source);
       continue;
     }
-    appended.push(buildFigure(resolved));
+    const reference = telegramRichMediaReference(resolved);
+    appended.push({ source, reference, figure: buildFigure(reference, resolved.media.type) });
   }
+  const withFigures = (figures: typeof appended) =>
+    figures.length
+      ? `${markdown.trimEnd()}\n\n${figures.map((entry) => entry.figure).join("\n\n")}`
+      : markdown;
+  const finalSources = appended.length
+    ? inputRichBlockMediaSources(
+        buildTelegramRichMarkdownPlan(withFigures(appended), {
+          tableMode: params.tableMode,
+          skipEntityDetection: params.skipEntityDetection,
+        }).richMessage.blocks,
+      )
+    : undefined;
+  // An unclosed code fence or HTML container can swallow appended figures.
+  // Keep those files on ordinary delivery and remove their internal references.
+  const acceptedFigures = appended.filter((entry) => finalSources?.has(entry.reference));
+  const consumedSources = new Set(acceptedFigures.map((entry) => entry.source));
   return {
-    text: appended.length ? `${markdown.trimEnd()}\n\n${appended.join("\n\n")}` : markdown,
-    media,
-    unconsumedMediaUrls,
+    text: withFigures(acceptedFigures),
+    media: finalSources
+      ? media.filter((entry) => finalSources.has(telegramRichMediaReference(entry)))
+      : media,
+    unconsumedMediaUrls: (params.mediaUrls ?? []).filter((source) => !consumedSources.has(source)),
   };
 }

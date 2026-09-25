@@ -245,27 +245,4 @@ describe("telegramOutbound normalizePayload", () => {
       }),
     ).toEqual(payloads);
   });
-
-  it("keeps fallback adopters with distinct quote metadata separate", () => {
-    const payloads = [
-      { text: "Pablo Daily Summary" },
-      {
-        text: "Pablo Daily Summary",
-        fallbackText: { text: "Pablo Daily Summary", replacesPayloadIndex: 0 },
-        channelData: { telegram: { quoteText: "First quote" } },
-      },
-      {
-        text: "Pablo Daily Summary",
-        fallbackText: { text: "Pablo Daily Summary", replacesPayloadIndex: 0 },
-        channelData: { telegram: { quoteText: "Second quote" } },
-      },
-    ];
-
-    expect(
-      telegramOutbound.normalizePayloadBatch?.({
-        cfg: {} as never,
-        payloads: payloads.map((payload, index) => ({ index, payload })),
-      }),
-    ).toEqual(payloads);
-  });
 });

@@ -2,6 +2,7 @@
 // preserving agent-session parent links and transcript update notifications.
 import type { SessionManager } from "../../agents/sessions/session-manager.js";
 import { persistSessionTranscriptTurn } from "../../config/sessions/session-accessor.js";
+import { appendAbortedSessionTranscriptPartial } from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
 import type { SessionLifecycleRevisionExpectation } from "../../config/sessions/session-transcript-turn-lifecycle.types.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -24,6 +25,8 @@ type GatewayInjectedAbortMeta = {
   aborted: true;
   origin: "rpc" | "stop-command" | "placement-abandon";
   runId: string;
+  /** The registered native producer has finished its canonical transcript writes. */
+  producerSettled?: true;
 };
 
 /** Result shape returned after appending an assistant row to a session transcript. */
@@ -81,8 +84,10 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
   /** When set, used as the assistant `content` array (e.g. text + embedded audio blocks). */
   content?: Array<Record<string, unknown>>;
   idempotencyKey?: string;
+  stopReason?: "stop" | "aborted";
   abortMeta?: GatewayInjectedAbortMeta;
   ttsSupplement?: GatewayInjectedTtsSupplementMarker;
+  contextFreeCommand?: true;
   now?: number;
   config?: OpenClawConfig;
 }): Promise<GatewayInjectedTranscriptAppendResult> {
@@ -124,9 +129,9 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
     content: canonicalContent,
     [ASSISTANT_DISPLAY_CONTENT_FIELD]: displayContent,
     timestamp: now,
-    // stopReason is a strict runner enum; this is not model output, but we still store it as a
-    // normal assistant message so it participates in the session parentId chain.
-    stopReason: "stop",
+    // Runtime projections retain their terminal state; host-authored partials
+    // keep their replayable default and carry cancellation in openclawAbort.
+    stopReason: params.stopReason ?? "stop",
     usage,
     // Make these explicit so downstream tooling never treats this as model output.
     api: "openai-responses",
@@ -134,6 +139,9 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
     model: "gateway-injected",
     ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
     ...(params.ttsSupplement ? { openclawTtsSupplement: params.ttsSupplement } : {}),
+    ...(params.contextFreeCommand === true
+      ? { excludeFromContext: true, __openclaw: { contextFreeCommand: true } }
+      : {}),
     ...(params.abortMeta
       ? {
           openclawAbort: {
@@ -151,6 +159,36 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
   try {
     if (!params.transcriptPath && (!params.storePath || !params.sessionId || !params.sessionKey)) {
       return { ok: false, error: "transcript identity not resolved" };
+    }
+    if (params.abortMeta?.producerSettled) {
+      if (!params.storePath || !params.sessionId || !params.sessionKey) {
+        return { ok: false, error: "settled producer transcript identity not resolved" };
+      }
+      const scope = {
+        storePath: params.storePath,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        ...(params.agentId ? { agentId: params.agentId } : {}),
+      };
+      const result = await appendAbortedSessionTranscriptPartial(scope, {
+        runId: params.abortMeta.runId,
+        message: messageBody,
+        expectedLifecycleRevision: params.expectedLifecycleRevision,
+        now,
+        config: params.config,
+      });
+      if (!result.ok) {
+        return { ok: false, error: result.error.code };
+      }
+      if (result.value.skipped) {
+        return { ok: true, skipped: true };
+      }
+      const { append } = result.value;
+      return {
+        ok: true,
+        messageId: append.messageId,
+        message: projectAssistantDisplayContent(append.message),
+      };
     }
     let predicateDeclined = false;
     const turn = await persistSessionTranscriptTurn(

@@ -2,12 +2,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { replaceFileAtomicSync } from "@openclaw/fs-safe/atomic";
 import {
   readAmbientTranscriptWatermarkFromEntry,
   resolveAmbientTranscriptWatermarkKey,
   updateAmbientTranscriptWatermark,
   type AmbientTranscriptWatermarkScope,
 } from "../config/sessions/ambient-transcript-watermark.js";
+import { buildConversationIdentity } from "../config/sessions/conversation-identity.js";
+import { resolveCurrentConversationSession } from "../config/sessions/conversation-registry.js";
 import {
   formatSqliteSessionFileMarker,
   parseSqliteSessionFileMarker,
@@ -39,7 +42,6 @@ import type {
   InternalSessionEntry,
   SessionEntry,
 } from "../config/sessions/types.js";
-import { replaceFileAtomicSync } from "../infra/replace-file.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import {
   clearGenerationPrivateFieldsForRotatedSessionPatch,
@@ -56,11 +58,13 @@ export { SessionStoreAgentIdRequiredError } from "../config/sessions/paths.js";
 
 export {
   deliveryContextFromSession,
-  normalizeSessionDeliveryState,
-  projectSessionDeliveryFields,
   sessionDeliveryChannel,
   sessionDeliveryOrigin,
   sessionDeliveryRoute,
+} from "../utils/delivery-context.read.js";
+export {
+  normalizeSessionDeliveryState,
+  projectSessionDeliveryFields,
 } from "../utils/delivery-context.shared.js";
 
 const SQLITE_SESSION_STORE_BACKUP_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
@@ -100,6 +104,8 @@ type SessionStoreEntryPatch = (
 ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
 
 type PatchSessionEntryParams = SessionStoreReadParams & {
+  /** Synchronous final ownership check executed inside the commit transaction. */
+  assertCommitAllowed?: () => void;
   fallbackEntry?: SessionEntry;
   maintenanceConfig?: ResolvedSessionMaintenanceConfigInput;
   preserveActivity?: boolean;
@@ -388,6 +394,21 @@ export function getSessionEntry(params: SessionStoreReadParams): SessionEntry | 
   return entry ? projectPluginSessionEntry(entry) : undefined;
 }
 
+/** Reads the current session binding of one canonical transport address. */
+export function getConversationSession(params: {
+  agentId: string;
+  env?: NodeJS.ProcessEnv;
+  storePath?: string;
+  channel: string;
+  accountId: string;
+  kind: "channel" | "direct" | "group";
+  peerId: string;
+  threadId?: string;
+}): { sessionKey: string; sessionId: string } | undefined {
+  const identity = buildConversationIdentity({ ...params, deliveryTarget: params.peerId });
+  return identity ? resolveCurrentConversationSession(params, identity.conversationRef) : undefined;
+}
+
 /**
  * Lists session entries for one agent. `readOnly` reads without joining the
  * agent database writable lifecycle (no create/register/migrate) — required
@@ -412,26 +433,22 @@ export function listSessionEntries(
 }
 
 /** Reads transcript events for a live SQLite-backed session identity. */
-export function loadTranscriptEventsSync(params: {
+export const loadTranscriptEventsSync: (params: {
   agentId?: string;
   env?: NodeJS.ProcessEnv;
   sessionId: string;
   sessionKey?: string;
   storePath?: string;
-}): SessionStoreTranscriptEvent[] {
-  return loadAccessorTranscriptEventsSync(params);
-}
+}) => SessionStoreTranscriptEvent[] = loadAccessorTranscriptEventsSync;
 
 /** Reads transcript freshness and byte size without materializing event rows. */
-export function readTranscriptStatsSync(params: {
+export const readTranscriptStatsSync: (params: {
   agentId?: string;
   env?: NodeJS.ProcessEnv;
   sessionId: string;
   sessionKey?: string;
   storePath?: string;
-}): { eventCount: number; maxSeq: number; sizeBytes: number } {
-  return readAccessorTranscriptStatsSync(params);
-}
+}) => { eventCount: number; maxSeq: number; sizeBytes: number } = readAccessorTranscriptStatsSync;
 
 /** Resolves the persisted session key for one SQLite transcript identity. */
 export function resolveTranscriptSessionKeyBySessionId(params: {
@@ -462,6 +479,7 @@ export async function patchSessionEntry(
       return preserveGenerationPrivateFields(persistedEntry, projectPluginSessionEntryPatch(patch));
     },
     {
+      assertCommitAllowed: params.assertCommitAllowed,
       fallbackEntry: params.fallbackEntry
         ? projectPluginSessionEntry(params.fallbackEntry)
         : undefined,

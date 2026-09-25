@@ -1,6 +1,7 @@
 import type {
   AgentHarnessSessionDeletionMutation,
   AgentHarnessSessionDeletionParams,
+  AgentHarness,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isIncognitoSessionKey } from "../incognito-session.js";
 import {
@@ -54,6 +55,28 @@ async function releaseSessionSubscription(
       );
     }
   }
+}
+
+/** Retire the old native context when the host commits a rewind or branch switch. */
+export async function withCodexAppServerSessionContextReset<T>(
+  bindingStore: CodexAppServerBindingStore,
+  params: Parameters<NonNullable<AgentHarness["withSessionContextReset"]>>[0],
+  run: (mutation: AgentHarnessSessionDeletionMutation) => Promise<T>,
+): Promise<T> {
+  params.assertCurrent();
+  const plan = await bindingStore.prepareSessionGenerationReclaim({
+    kind: "session",
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+  });
+  params.assertCurrent();
+  // Prepare the recorded predecessor directly; a rejected cut must not adopt or reset it.
+  const sessionId =
+    plan.kind === "verify" && plan.expectedPreviousSessionId === params.previousSessionId
+      ? plan.expectedPreviousSessionId
+      : params.sessionId;
+  return withCodexAppServerSessionDeletion(bindingStore, { ...params, sessionId }, run);
 }
 
 /** Prepare exact binding deletion before the session owner commits either database. */
@@ -160,7 +183,7 @@ export async function retireCodexAppServerSessionGeneration(params: {
     params.mode === "reset"
       ? params.bindingStore.resetSessionGeneration(params.identity)
       : params.bindingStore.retireSessionGeneration(params.identity);
-  const expectedBinding = await params.bindingStore.read(params.identity);
+  const expectedBinding = params.bindingStore.read(params.identity);
   if (!expectedBinding) {
     // Leasing an absent/retired row manufactures state or rejects its fence;
     // callers need the original absent/conflict result for reset reclamation.
@@ -168,7 +191,7 @@ export async function retireCodexAppServerSessionGeneration(params: {
   }
   return await withCodexAppServerThreadMutation(expectedBinding.threadId, () =>
     params.bindingStore.withLease(params.identity, async () => {
-      const binding = await params.bindingStore.read(params.identity);
+      const binding = params.bindingStore.read(params.identity);
       if (!binding || !isSameCodexAppServerThreadOwner(binding, expectedBinding)) {
         return "conflict";
       }

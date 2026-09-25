@@ -21,56 +21,66 @@ function localAudio(index: number): TelegramRichLocalMedia {
 }
 
 describe("Telegram rich local media page delivery", () => {
-  it("binds media1 and media10 by exact reference through a page fallback", async () => {
-    const media = Array.from({ length: 10 }, (_, index) => localAudio(index + 1));
-    const blocks: InputRichBlock[] = media.flatMap((entry) => [
-      { type: "paragraph", text: "x" },
-      {
-        type: "audio",
-        audio: { type: "audio", media: `tg://audio?id=${entry.id}` },
-      },
-    ]);
-    const pages = planTelegramTextDeliveryPages({
-      text: "",
-      maxChars: 1,
-      richMessages: true,
-      richMessage: { blocks },
-      richLocalMedia: media,
-    });
-
-    expect(pages).toHaveLength(10);
-    const lastPage = pages.at(-1);
-    if (!lastPage) {
-      throw new Error("expected the final rich-message page");
-    }
-    expect(lastPage.plainText).toBe("x\ntrack10.mp3");
-    expect(lastPage.richLocalMedia?.map((entry) => entry.id)).toEqual(["media10"]);
-
-    const sendPlain = vi.fn(async (text: string) => text);
-    const onPlainFallback = vi.fn();
-    const delivered: string[] = [];
-    for await (const part of sendTelegramTextPageParts({
-      page: lastPage,
-      context: "page send",
-      warn: vi.fn(),
-      onPlainFallback,
-      sender: {
-        sendPlain,
-        sendHtml: async () => "html",
-        sendRich: async () => {
-          throw new Error("Bad Request: RICH_MESSAGE_AUDIO_INVALID");
+  it.each([
+    { maxChars: 1, pageCount: 10 },
+    { maxChars: 100, pageCount: 1 },
+  ])(
+    "binds media1 and media10 exactly through a $pageCount-page fallback",
+    async ({ maxChars, pageCount }) => {
+      const media = Array.from({ length: 10 }, (_, index) => localAudio(index + 1));
+      const blocks: InputRichBlock[] = media.flatMap((entry) => [
+        { type: "paragraph", text: "x" },
+        {
+          type: "audio",
+          audio: { type: "audio", media: `tg://audio?id=${entry.id}` },
         },
-      },
-    })) {
-      delivered.push(part.result);
-    }
+      ]);
+      const pages = planTelegramTextDeliveryPages({
+        text: "",
+        maxChars,
+        richMessages: true,
+        richMessage: { blocks },
+        richLocalMedia: media,
+      });
 
-    expect(delivered).toEqual(["x\ntrack10.mp3"]);
-    expect(sendPlain).toHaveBeenCalledWith(
-      "x\ntrack10.mp3",
-      { index: 0, count: 1 },
-      "page send-plain",
-    );
-    expect(onPlainFallback).toHaveBeenCalledWith(lastPage);
-  });
+      expect(pages).toHaveLength(pageCount);
+      const lastPage = pages.at(-1);
+      if (!lastPage) {
+        throw new Error("expected the final rich-message page");
+      }
+      const expectedMedia = pageCount === 1 ? media : media.slice(-1);
+      const expectedText = expectedMedia.map((entry) => `x\n${entry.fileName}`).join("\n");
+      expect(lastPage.plainText).toBe(expectedText);
+      expect(lastPage.richLocalMedia?.map((entry) => entry.id)).toEqual(
+        expectedMedia.map((entry) => entry.id),
+      );
+
+      const sendPlain = vi.fn(async (text: string) => text);
+      const onPlainFallback = vi.fn();
+      const delivered: string[] = [];
+      for await (const part of sendTelegramTextPageParts({
+        page: lastPage,
+        context: "page send",
+        warn: vi.fn(),
+        onPlainFallback,
+        sender: {
+          sendPlain,
+          sendHtml: async () => "html",
+          sendRich: async () => {
+            throw new Error("Bad Request: RICH_MESSAGE_AUDIO_INVALID");
+          },
+        },
+      })) {
+        delivered.push(part.result);
+      }
+
+      expect(delivered).toEqual([expectedText]);
+      expect(sendPlain).toHaveBeenCalledWith(
+        expectedText,
+        { index: 0, count: 1 },
+        "page send-plain",
+      );
+      expect(onPlainFallback).toHaveBeenCalledWith(lastPage);
+    },
+  );
 });

@@ -81,11 +81,16 @@ function resolvePackageRuntimeExtensionEntries(params: {
 }
 
 function missingCompiledRuntimeEntryMessage(params: {
-  label: string;
+  context: "install" | "installed";
   entry: string;
   candidates: readonly string[];
 }): string {
-  return `${params.label} requires compiled runtime output for TypeScript entry ${params.entry}: expected ${params.candidates.join(", ")}. This is a plugin packaging issue, not a local config problem; update or reinstall the plugin after the publisher ships compiled JavaScript, or disable/uninstall the plugin until then. TypeScript source fallback is only supported for source checkouts and local development paths.`;
+  const label = params.context === "install" ? "package install" : "installed plugin package";
+  const recovery =
+    params.context === "install"
+      ? "retry installation after the publisher ships compiled JavaScript"
+      : "update or reinstall the plugin after the publisher ships compiled JavaScript, or disable/uninstall the plugin until then";
+  return `${label} requires compiled runtime output for TypeScript entry ${params.entry}: expected ${params.candidates.join(", ")}. This is a plugin packaging issue, not a local config problem; ${recovery}. TypeScript source fallback is only supported for source checkouts and local development paths.`;
 }
 
 async function validatePackageExtensionEntry(params: {
@@ -136,6 +141,68 @@ async function validatePackageExtensionEntry(params: {
   return { ok: true, exists: true };
 }
 
+async function validatePackageEntryForInstall(params: {
+  packageDir: string;
+  entry: string;
+  runtimeEntry?: string;
+  entryKind: "extension" | "setup";
+  allowSourceTypeScriptEntries?: boolean;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const sourceEntry = await validatePackageExtensionEntry({
+    packageDir: params.packageDir,
+    entry: params.entry,
+    label: `${params.entryKind} entry`,
+    requireExisting: false,
+  });
+  if (!sourceEntry.ok) {
+    return sourceEntry;
+  }
+
+  if (params.runtimeEntry) {
+    const runtimeResult = await validatePackageExtensionEntry({
+      packageDir: params.packageDir,
+      entry: params.runtimeEntry,
+      label: `runtime ${params.entryKind} entry`,
+      requireExisting: true,
+    });
+    return runtimeResult.ok ? { ok: true } : runtimeResult;
+  }
+
+  const builtEntryCandidates = listBuiltRuntimeEntryCandidates(params.entry);
+  for (const builtEntry of builtEntryCandidates) {
+    const builtResult = await validatePackageExtensionEntry({
+      packageDir: params.packageDir,
+      entry: builtEntry,
+      label: `inferred runtime ${params.entryKind} entry`,
+      requireExisting: false,
+    });
+    if (!builtResult.ok) {
+      return builtResult;
+    }
+    if (builtResult.exists) {
+      return { ok: true };
+    }
+  }
+
+  if (
+    sourceEntry.exists &&
+    (!isTypeScriptPackageEntry(params.entry) || params.allowSourceTypeScriptEntries)
+  ) {
+    return { ok: true };
+  }
+  if (builtEntryCandidates.length > 0) {
+    return {
+      ok: false,
+      error: missingCompiledRuntimeEntryMessage({
+        context: "install",
+        entry: params.entry,
+        candidates: builtEntryCandidates,
+      }),
+    };
+  }
+  return { ok: false, error: `${params.entryKind} entry not found: ${params.entry}` };
+}
+
 /** Validates package extension/setup entries before installing a plugin package. */
 export async function validatePackageExtensionEntriesForInstall(params: {
   packageDir: string;
@@ -152,87 +219,16 @@ export async function validatePackageExtensionEntriesForInstall(params: {
   }
 
   for (const [index, entry] of params.extensions.entries()) {
-    const sourceEntry = await validatePackageExtensionEntry({
+    const result = await validatePackageEntryForInstall({
       packageDir: params.packageDir,
       entry,
-      label: "extension entry",
-      requireExisting: false,
+      runtimeEntry: runtimeResolution.runtimeExtensions[index],
+      entryKind: "extension",
+      allowSourceTypeScriptEntries: params.allowSourceTypeScriptEntries,
     });
-    if (!sourceEntry.ok) {
-      return sourceEntry;
+    if (!result.ok) {
+      return result;
     }
-
-    const runtimeEntry = runtimeResolution.runtimeExtensions[index];
-    if (runtimeEntry) {
-      const runtimeResult = await validatePackageExtensionEntry({
-        packageDir: params.packageDir,
-        entry: runtimeEntry,
-        label: "runtime extension entry",
-        requireExisting: true,
-      });
-      if (!runtimeResult.ok) {
-        return runtimeResult;
-      }
-      continue;
-    }
-
-    let foundBuiltEntry = false;
-    const builtEntryCandidates = listBuiltRuntimeEntryCandidates(entry);
-    for (const builtEntry of builtEntryCandidates) {
-      const builtResult = await validatePackageExtensionEntry({
-        packageDir: params.packageDir,
-        entry: builtEntry,
-        label: "inferred runtime extension entry",
-        requireExisting: false,
-      });
-      if (!builtResult.ok) {
-        return builtResult;
-      }
-      if (builtResult.exists) {
-        foundBuiltEntry = true;
-        break;
-      }
-    }
-
-    if (foundBuiltEntry) {
-      continue;
-    }
-
-    if (
-      sourceEntry.exists &&
-      isTypeScriptPackageEntry(entry) &&
-      params.allowSourceTypeScriptEntries
-    ) {
-      continue;
-    }
-
-    if (sourceEntry.exists && isTypeScriptPackageEntry(entry)) {
-      return {
-        ok: false,
-        error: missingCompiledRuntimeEntryMessage({
-          label: "package install",
-          entry,
-          candidates: builtEntryCandidates,
-        }),
-      };
-    }
-
-    if (sourceEntry.exists) {
-      continue;
-    }
-
-    if (builtEntryCandidates.length > 0) {
-      return {
-        ok: false,
-        error: missingCompiledRuntimeEntryMessage({
-          label: "package install",
-          entry,
-          candidates: builtEntryCandidates,
-        }),
-      };
-    }
-
-    return { ok: false, error: `extension entry not found: ${entry}` };
   }
 
   const packageManifest = getPackageManifestMetadata(params.manifest);
@@ -245,86 +241,13 @@ export async function validatePackageExtensionEntriesForInstall(params: {
     };
   }
   if (setupEntry) {
-    const sourceEntry = await validatePackageExtensionEntry({
+    return await validatePackageEntryForInstall({
       packageDir: params.packageDir,
       entry: setupEntry,
-      label: "setup entry",
-      requireExisting: false,
+      runtimeEntry: runtimeSetupEntry,
+      entryKind: "setup",
+      allowSourceTypeScriptEntries: params.allowSourceTypeScriptEntries,
     });
-    if (!sourceEntry.ok) {
-      return sourceEntry;
-    }
-
-    if (runtimeSetupEntry) {
-      const runtimeResult = await validatePackageExtensionEntry({
-        packageDir: params.packageDir,
-        entry: runtimeSetupEntry,
-        label: "runtime setup entry",
-        requireExisting: true,
-      });
-      if (!runtimeResult.ok) {
-        return runtimeResult;
-      }
-      return { ok: true };
-    }
-
-    let foundBuiltSetupEntry = false;
-    const builtSetupCandidates = listBuiltRuntimeEntryCandidates(setupEntry);
-    for (const builtEntry of builtSetupCandidates) {
-      const builtResult = await validatePackageExtensionEntry({
-        packageDir: params.packageDir,
-        entry: builtEntry,
-        label: "inferred runtime setup entry",
-        requireExisting: false,
-      });
-      if (!builtResult.ok) {
-        return builtResult;
-      }
-      if (builtResult.exists) {
-        foundBuiltSetupEntry = true;
-        break;
-      }
-    }
-
-    if (foundBuiltSetupEntry) {
-      return { ok: true };
-    }
-
-    if (
-      sourceEntry.exists &&
-      isTypeScriptPackageEntry(setupEntry) &&
-      params.allowSourceTypeScriptEntries
-    ) {
-      return { ok: true };
-    }
-
-    if (sourceEntry.exists && isTypeScriptPackageEntry(setupEntry)) {
-      return {
-        ok: false,
-        error: missingCompiledRuntimeEntryMessage({
-          label: "package install",
-          entry: setupEntry,
-          candidates: builtSetupCandidates,
-        }),
-      };
-    }
-
-    if (sourceEntry.exists) {
-      return { ok: true };
-    }
-
-    if (builtSetupCandidates.length > 0) {
-      return {
-        ok: false,
-        error: missingCompiledRuntimeEntryMessage({
-          label: "package install",
-          entry: setupEntry,
-          candidates: builtSetupCandidates,
-        }),
-      };
-    }
-
-    return { ok: false, error: `setup entry not found: ${setupEntry}` };
   }
 
   return { ok: true };
@@ -381,7 +304,7 @@ function resolvePackageEntrySource(params: {
     }
   }
 
-  for (const candidate of new Set(candidates)) {
+  for (const candidate of candidates) {
     if (!pluginCacheExistsSync(candidate)) {
       continue;
     }
@@ -549,7 +472,7 @@ function resolvePackageRuntimeEntrySource(params: {
         level: "warn",
         ...(params.pluginIdHint ? { pluginId: params.pluginIdHint } : {}),
         message: missingCompiledRuntimeEntryMessage({
-          label: "installed plugin package",
+          context: "installed",
           entry: safeEntry.relativePath,
           candidates: builtEntryCandidates,
         }),
@@ -630,7 +553,14 @@ export function resolvePackageSetupSource(params: {
 }
 
 /** Resolves runtime extension sources for a plugin package manifest. */
-export function resolvePackageRuntimeExtensionSources(params: {
+export function resolvePackageRuntimeExtensionSources(
+  params: Parameters<typeof resolvePackageRuntimeExtensions>[0],
+): string[] {
+  return resolvePackageRuntimeExtensions(params).map((entry) => entry.source);
+}
+
+/** Keeps declarations paired with their runtime sources when earlier entries cannot resolve. */
+export function resolvePackageRuntimeExtensions(params: {
   packageDir: string;
   packageRootRealPath?: string;
   manifest: PackageManifest | null;
@@ -641,7 +571,7 @@ export function resolvePackageRuntimeExtensionSources(params: {
   sourceLabel: string;
   diagnostics: PluginDiagnostic[];
   rejectHardlinks?: boolean;
-}): string[] {
+}): Array<{ entryPath: string; source: string }> {
   const runtimeResolution = resolvePackageRuntimeExtensionEntries({
     manifest: params.manifest,
     extensions: params.extensions,
@@ -675,6 +605,6 @@ export function resolvePackageRuntimeExtensionSources(params: {
       diagnostics: params.diagnostics,
       rejectHardlinks: params.rejectHardlinks,
     });
-    return source ? [source] : [];
+    return source ? [{ entryPath, source }] : [];
   });
 }

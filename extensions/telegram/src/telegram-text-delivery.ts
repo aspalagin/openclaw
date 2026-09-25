@@ -1,5 +1,5 @@
 import type { MarkdownTableMode } from "openclaw/plugin-sdk/config-contracts";
-import { chunkMarkdownTextWithMode, type ChunkMode } from "openclaw/plugin-sdk/reply-chunking";
+import { chunkByParagraph, type ChunkMode } from "openclaw/plugin-sdk/reply-chunking";
 import {
   escapeTelegramHtml,
   markdownToTelegramChunks,
@@ -84,9 +84,12 @@ function attachTelegramRichLocalMedia(
   }
   // The plain fallback names the file: a tg:// id only resolves inside the
   // rich upload, and the original file follows through the legacy media path.
-  const plainText = matched.reduce(
-    (text, entry) => text.replaceAll(telegramRichMediaReference(entry), entry.fileName),
-    page.plainText,
+  const fileNames = new Map(
+    matched.map((entry) => [telegramRichMediaReference(entry), entry.fileName]),
+  );
+  const plainText = page.plainText.replace(
+    /tg:\/\/(?:photo|video|audio)\?id=[A-Za-z0-9_-]+/g,
+    (reference) => fileNames.get(reference) ?? reference,
   );
   return {
     plainText,
@@ -184,7 +187,7 @@ export function planTelegramTextDeliveryPages(
   }
   const markdownParts =
     params.chunkMode === "newline"
-      ? chunkMarkdownTextWithMode(params.text, maxChars, params.chunkMode)
+      ? chunkByParagraph(params.text, maxChars, { splitLongParagraphs: false })
       : [params.text];
   const pages: TelegramTextDeliveryPage[] = [];
   for (const markdown of markdownParts) {

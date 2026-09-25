@@ -40,6 +40,8 @@ export type ChannelOutboundContext = {
   identity?: OutboundIdentity;
   deps?: OutboundSendDeps;
   silent?: boolean;
+  /** Live cancellation signal; check before each physical send and after awaited preparation. */
+  signal?: AbortSignal;
   gatewayClientScopes?: readonly string[];
   /** @internal Opaque durable intent id for exact provider-side send reconciliation. */
   deliveryQueueId?: string;
@@ -208,23 +210,10 @@ export type ChannelOutboundAdapter = {
   ) => ReadonlyArray<ReplyPayload | null>;
   sendTextOnlyErrorPayloads?: boolean;
   /**
-   * Opt a media-bearing payload into one `sendPayload` call instead of core's
-   * default `sendMedia` fan-out. The callback is a routing decision only;
-   * returning false preserves the normal text/media fallback path.
-   *
-   * When this returns true, `sendPayload` owns every text and media part in the
-   * original payload, including ordering, reply semantics, and any fallback for
-   * media it cannot embed. `forceDocument` is forwarded so adapters can decline
-   * the combined route when it would change the caller's requested media mode.
-   * Core ignores this hook unless the selected message/outbound durable-final
-   * capability map explicitly declares `payload: true`.
+   * Route ordinary multi-media payloads intact to sendPayload for native grouping.
+   * The adapter must check cancellation and revalidate authority before every physical send.
    */
-  preferPayloadForMedia?: (params: {
-    payload: ReplyPayload;
-    cfg: OpenClawConfig;
-    accountId?: string | null;
-    forceDocument?: boolean;
-  }) => boolean;
+  sendPayloadGroupsMedia?: boolean;
   shouldSkipPlainTextSanitization?: (params: { payload: ReplyPayload }) => boolean;
   resolveEffectiveTextChunkLimit?: (params: {
     cfg: OpenClawConfig;
@@ -284,6 +273,8 @@ export type ChannelOutboundAdapter = {
     messageId: string;
     pin: ReplyPayloadDeliveryPin;
     gatewayClientScopes?: readonly string[];
+    /** @internal Revalidate the delivery owner after preparation and before each provider request. */
+    assertDirectAdapterHandoff?: () => void;
   }) => Promise<void> | void;
   /**
    * @deprecated Use shouldTreatDeliveredTextAsVisible instead.

@@ -1,7 +1,7 @@
 // Command queue serializes and limits process execution for shared command lanes.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
-import { formatErrorMessage, readErrorName } from "../infra/errors.js";
+import { formatErrorMessage, readErrorName, toErrorObject } from "../infra/errors.js";
 import {
   diagnosticLogger as diag,
   logLaneDequeue,
@@ -11,11 +11,9 @@ import {
   applyCommandLaneCapacity,
   canAdmitInGroup,
   type CommandLaneGroupSpec,
-  drainGroupSiblings,
-  getGroupRegistry,
+  drainCommandLaneGroup,
   getLaneGroup,
   installCommandLaneGroup,
-  type LaneGroupState,
   validateCommandLaneGroupSpec,
 } from "./command-queue.capacity-groups.js";
 import {
@@ -24,8 +22,10 @@ import {
   enqueueLaneQueue,
   type CommandLaneTaskMarker,
   getQueueState,
+  type LaneGroupState,
   type LaneState,
   normalizeLane,
+  removeLaneQueueEntry,
   type QueueEntry,
   type QueuePriority,
 } from "./command-queue.state.js";
@@ -36,13 +36,14 @@ import type {
 } from "./command-queue.types.js";
 import {
   GatewayDrainingError,
+  type GatewayDrainReason,
   isGatewaySubordinateWorkAdmissionClosed,
   isGatewayWorkAdmissionClosed,
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
   runWithGatewayRootWorkReadmission,
 } from "./gateway-work-admission.js";
-import { CommandLane } from "./lanes.js";
+import { CommandLane, SUBAGENT_LANE_PREFIX } from "./lanes.js";
 export { GatewayDrainingError } from "./gateway-work-admission.js";
 export type { CommandLaneTaskMarker } from "./command-queue.state.js";
 export type { CommandLaneSnapshot } from "./command-queue.types.js";
@@ -122,6 +123,12 @@ function getLaneDepth(state: LaneState): number {
   return state.queue.length + state.activeTaskIds.size;
 }
 
+function getDefaultLaneConcurrency(lane: string): number {
+  return lane.startsWith(SUBAGENT_LANE_PREFIX)
+    ? (getQueueState().lanes.get(CommandLane.Subagent)?.maxConcurrent ?? 1)
+    : 1;
+}
+
 function getLaneState(lane: string): LaneState {
   const queueState = getQueueState();
   const existing = queueState.lanes.get(lane);
@@ -132,7 +139,7 @@ function getLaneState(lane: string): LaneState {
     lane,
     queue: createLaneQueue(),
     activeTaskIds: new Set(),
-    maxConcurrent: 1,
+    maxConcurrent: getDefaultLaneConcurrency(lane),
     draining: false,
     generation: 0,
   };
@@ -153,10 +160,11 @@ function retireIdleScopedCommandLane(state: LaneState): void {
     state.draining ||
     state.activeTaskIds.size > 0 ||
     state.queue.length > 0 ||
-    state.maxConcurrent !== 1 ||
-    (!state.lane.startsWith("session:") &&
-      !state.lane.startsWith("nested:") &&
-      !state.lane.startsWith("context-engine-turn-maintenance:"))
+    (!state.lane.startsWith(SUBAGENT_LANE_PREFIX) &&
+      (state.maxConcurrent !== 1 ||
+        (!state.lane.startsWith("session:") &&
+          !state.lane.startsWith("nested:") &&
+          !state.lane.startsWith("context-engine-turn-maintenance:"))))
   ) {
     return;
   }
@@ -434,7 +442,7 @@ function drainLane(
 
 function drainReadyCommandLane(lane: string, completedState?: LaneState): void {
   if (getLaneGroup(lane)) {
-    drainGroupSiblings(lane, drainLane);
+    drainCommandLaneGroup(lane, drainLane);
     return;
   }
   // An idle scoped lane may have been retired and recreated while an older
@@ -447,12 +455,30 @@ function drainReadyCommandLane(lane: string, completedState?: LaneState): void {
  * Mark gateway as draining for restart so new enqueues fail fast with
  * `GatewayDrainingError` instead of being silently killed on shutdown.
  */
-export function markGatewayDraining(): void {
-  markGatewayRestartDraining();
+export function markGatewayDraining(reason?: GatewayDrainReason): void {
+  markGatewayRestartDraining(reason);
 }
 
 export function isGatewayDraining(): boolean {
   return isGatewayWorkAdmissionClosed();
+}
+
+function updateLaneConcurrency(lane: string, maxConcurrent: number): LaneState[] {
+  const state = getLaneState(lane);
+  const minConcurrent = isQuietProbeLane(lane) ? 1 : 0;
+  state.maxConcurrent = Math.max(minConcurrent, Math.floor(maxConcurrent));
+  const updated = [state];
+  if (lane === "subagent") {
+    // The named lane owns the setting; each spawning session gets its own
+    // capacity. Publish every existing queue's new width before admitting work.
+    for (const scoped of getQueueState().lanes.values()) {
+      if (scoped.lane.startsWith(SUBAGENT_LANE_PREFIX)) {
+        scoped.maxConcurrent = state.maxConcurrent;
+        updated.push(scoped);
+      }
+    }
+  }
+  return updated;
 }
 
 /**
@@ -487,13 +513,12 @@ export function publishLaneConfiguration(config: {
   // Phase 1 — install state with dispatch suppressed. Nothing may start here.
   for (const [rawLane, maxConcurrent] of Object.entries(config.lanes ?? {})) {
     const lane = normalizeLane(rawLane);
-    const state = getLaneState(lane);
-    const minConcurrent = isQuietProbeLane(lane) ? 1 : 0;
-    state.maxConcurrent = Math.max(minConcurrent, Math.floor(maxConcurrent));
-    touched.add(lane);
+    for (const state of updateLaneConcurrency(lane, maxConcurrent)) {
+      touched.add(state.lane);
+    }
   }
   for (const group of config.clearGroups ?? []) {
-    const { groups, groupByLane } = getGroupRegistry();
+    const { laneGroups: groups, laneGroupByLane: groupByLane } = getQueueState();
     const existing = groups.get(group);
     if (existing) {
       for (const member of existing.members) {
@@ -504,7 +529,7 @@ export function publishLaneConfiguration(config: {
     }
   }
   for (const next of validated) {
-    const { groups, groupByLane } = getGroupRegistry();
+    const { laneGroups: groups, laneGroupByLane: groupByLane } = getQueueState();
     const previous = groups.get(next.group);
     for (const member of previous?.members ?? []) {
       touched.add(member);
@@ -532,12 +557,10 @@ export function publishLaneConfiguration(config: {
 
 export function setCommandLaneConcurrency(lane: string, maxConcurrent: number) {
   const cleaned = normalizeLane(lane);
-  const state = getLaneState(cleaned);
-  const isProbeLane = isQuietProbeLane(cleaned);
-  const minConcurrent = isProbeLane ? 1 : 0;
-  state.maxConcurrent = Math.max(minConcurrent, Math.floor(maxConcurrent));
-  if (state.maxConcurrent > 0) {
-    drainReadyCommandLane(cleaned);
+  for (const state of updateLaneConcurrency(cleaned, maxConcurrent)) {
+    if (state.maxConcurrent > 0) {
+      drainReadyCommandLane(state.lane);
+    }
   }
 }
 
@@ -546,6 +569,9 @@ export function enqueueCommandInLane<T>(
   task: (marker: CommandLaneTaskMarker) => Promise<T>,
   opts?: CommandQueueEnqueueOptions,
 ): Promise<T> {
+  if (opts?.abortSignal?.aborted) {
+    return Promise.reject(toErrorObject(opts.abortSignal.reason, "Queued command aborted"));
+  }
   const queueState = getQueueState();
   if (isGatewaySubordinateWorkAdmissionClosed()) {
     return Promise.reject(new GatewayDrainingError());
@@ -574,6 +600,20 @@ export function enqueueCommandInLane<T>(
       onWait: opts?.onWait,
     };
     enqueueLaneEntry(state, entry);
+    const signal = opts?.abortSignal;
+    if (signal) {
+      const onAbort = () => {
+        // The once-listener is already detached. Searching for it again scans
+        // the remaining listeners when many entries share one abort signal.
+        entry.releaseQueuedAbort = undefined;
+        if (removeLaneQueueEntry(state.queue, entry)) {
+          entry.reject(toErrorObject(signal.reason, "Queued command aborted"));
+          retireIdleScopedCommandLane(state);
+        }
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      entry.releaseQueuedAbort = () => signal.removeEventListener("abort", onAbort);
+    }
     logLaneEnqueue(cleaned, getLaneDepth(state));
     drainReadyCommandLane(cleaned);
     if (entry.queued) {
@@ -602,7 +642,7 @@ export function getCommandLaneSnapshot(lane: string = CommandLane.Main): Command
     lane: state?.lane ?? resolved,
     queuedCount: state?.queue.length ?? 0,
     activeCount: state?.activeTaskIds.size ?? 0,
-    maxConcurrent: state?.maxConcurrent ?? 1,
+    maxConcurrent: state?.maxConcurrent ?? getDefaultLaneConcurrency(resolved),
     draining: state?.draining ?? false,
     generation: state?.generation ?? 0,
     blockedBy: null,
@@ -687,7 +727,7 @@ export function resetCommandLane(lane: string = CommandLane.Main): number {
 }
 
 /**
- * Reset all lane runtime state to idle. Used after SIGUSR1 in-process
+ * Reset all lane runtime state to idle. Used after SIGUSR2 in-process
  * restarts where interrupted tasks' finally blocks may not run, leaving
  * stale active task IDs that permanently block new work from draining.
  *

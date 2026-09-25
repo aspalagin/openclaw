@@ -1,4 +1,6 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { escapeRegExp } from "../regexp.js";
+import { findCodeRegions } from "./code-regions.js";
 
 type TextProjection = { text: string; delta: string | null };
 type TextProjector = (input: TextProjection) => TextProjection;
@@ -95,10 +97,48 @@ export function createTextProjection(filters: readonly TextFilter[]) {
   };
 }
 
-export function trimTextFilter(mode: "none" | "start" | "both"): TextFilter {
+/** Trim surrounding padding without removing Markdown block indentation. */
+export function trimTextPreservingCode(
+  text: string,
+  mode: "start" | "both" = "both",
+  codeRegions?: ReturnType<typeof findCodeRegions>,
+): string {
+  let trimmed = text.trimStart();
+  if (trimmed && trimmed.length !== text.length) {
+    const contentStart = text.length - trimmed.length;
+    const leadingCode = (codeRegions ?? findCodeRegions(text)).find(
+      (region) =>
+        (region.block || (codeRegions && region.start === 0)) &&
+        region.start <= contentStart &&
+        contentStart < region.end,
+    );
+    if (leadingCode) {
+      trimmed = text.slice(leadingCode.start);
+    }
+  }
+  if (mode === "both") {
+    const contentEnd = text.trimEnd().length;
+    if (codeRegions?.some((region) => region.start <= contentEnd && region.end === text.length)) {
+      return trimmed;
+    }
+    return trimmed.trimEnd();
+  }
+  return trimmed;
+}
+
+export function trimTextFilter(
+  mode: "none" | "start" | "both",
+  options?: { preserveCodeIndentation?: boolean },
+): TextFilter {
   return {
     transform: (text) =>
-      mode === "both" ? text.trim() : mode === "start" ? text.trimStart() : text,
+      mode === "none"
+        ? text
+        : options?.preserveCodeIndentation
+          ? trimTextPreservingCode(text, mode)
+          : mode === "both"
+            ? text.trim()
+            : text.trimStart(),
     create: () => {
       let text = "";
       let leading = true;
@@ -110,7 +150,14 @@ export function trimTextFilter(mode: "none" | "start" | "both"): TextFilter {
         }
         const appended = input.delta ?? input.text;
         let delta = leading ? appended.trimStart() : appended;
-        removedLeading ||= delta.length !== appended.length;
+        if (leading && options?.preserveCodeIndentation && delta) {
+          // The first visible content classifies any preceding whitespace-only deltas.
+          // Replacements create a fresh projector; later appends retain this decision.
+          delta = trimTextPreservingCode(input.text, "start");
+          removedLeading = delta.length !== input.text.length;
+        } else {
+          removedLeading ||= delta.length !== appended.length;
+        }
         leading &&= !delta;
         if (mode === "both") {
           const content = delta.trimEnd();
@@ -155,7 +202,46 @@ export const leadingEmptyLinesTextFilter: TextFilter = {
   },
 };
 
-function createDuplicateParagraphProjector(): TextProjector {
+function collapsePlainDuplicateParagraphs(text: string): string {
+  return createDuplicateParagraphProjector(false)({ text, delta: null }).text;
+}
+
+function collapseDuplicateParagraphs(text: string): string {
+  const collapsed = collapsePlainDuplicateParagraphs(text);
+  if (collapsed === text) {
+    return text;
+  }
+  const regions = findCodeRegions(text);
+  if (regions.length === 0) {
+    return collapsed;
+  }
+  // The marker is absent from source, so each indexed token is collision-free.
+  let marker = "\0";
+  while (text.includes(marker)) {
+    marker += "\0";
+  }
+  const inlineTokens = new Map<string, string>();
+  let masked = "";
+  let cursor = 0;
+  const protectedText = regions.map((region, index) => {
+    const source = text.slice(region.start, region.end);
+    let token = `${marker}${index}${marker}`;
+    if (!region.block) {
+      token = inlineTokens.get(source) ?? token;
+      inlineTokens.set(source, token);
+    }
+    masked += text.slice(cursor, region.start) + token;
+    cursor = region.end;
+    return source;
+  });
+  // Only our indexed tokens contain the marker; a callback preserves literal dollar sequences.
+  return collapsePlainDuplicateParagraphs(masked + text.slice(cursor)).replace(
+    new RegExp(`${marker}(\\d+)${marker}`, "g"),
+    (_token, index: string) => expectDefined(protectedText[Number(index)], "protected code text"),
+  );
+}
+
+function createDuplicateParagraphProjector(protectCode = true): TextProjector {
   let active = false;
   let trailingNewline = false;
   let text = "";
@@ -239,13 +325,20 @@ function createDuplicateParagraphProjector(): TextProjector {
     const collapsed = hasDuplicate || duplicate;
     let delta = input.delta;
     if (collapsed) {
+      // Code can expose pending whitespace; the plain suffix cannot safely append across it.
       delta =
-        input.delta === null || !wasCollapsed || duplicate !== wasDuplicate || completedParagraph
+        input.delta === null ||
+        !wasCollapsed ||
+        duplicate !== wasDuplicate ||
+        completedParagraph ||
+        (protectCode && /\s$/.test(text))
           ? null
           : added;
       text =
         delta === null
-          ? completed + (paragraph && !duplicate ? (completed ? "\n\n" : "") + paragraph : "")
+          ? protectCode
+            ? collapseDuplicateParagraphs(input.text)
+            : completed + (paragraph && !duplicate ? (completed ? "\n\n" : "") + paragraph : "")
           : text + delta;
     } else {
       text = input.text;
@@ -261,6 +354,6 @@ function createDuplicateParagraphProjector(): TextProjector {
 }
 
 export const duplicateParagraphTextFilter: TextFilter = {
-  transform: (text) => createDuplicateParagraphProjector()({ text, delta: null }).text,
+  transform: collapseDuplicateParagraphs,
   create: createDuplicateParagraphProjector,
 };

@@ -1,18 +1,20 @@
 import { html, nothing, type TemplateResult } from "lit";
 import type { ApplicationContext } from "../../app/context.ts";
-import { loadSettings } from "../../app/settings.ts";
-import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../components/image-lightbox.types.ts";
 import { t } from "../../i18n/index.ts";
+import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
+import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import { renderChatPermissionPicker } from "../chat/components/chat-permission-picker.ts";
+import type { SidebarContent } from "../chat/components/chat-sidebar-content-types.ts";
 import type { NewSessionDictationControl } from "./composer-dictation-control.ts";
-import { renderDraftError } from "./composer.ts";
-import { isWorktreeNameValid } from "./create-params.ts";
-import { renderNewSessionDraftComposer } from "./draft-composer.ts";
+import { renderNewSessionDraftComposer, renderNewSessionDraftErrors } from "./draft-composer.ts";
 import type { DraftGatewayState } from "./draft-gateway-state.ts";
 import type { DraftPlaceState } from "./draft-place-state.ts";
 import type { DraftSubmissionFlow } from "./draft-submission-flow.ts";
 import type { NewSessionTitleController } from "./draft-title.ts";
 import { renderNewSessionIncognitoNotice } from "./incognito-control.ts";
+
+registerNewSessionSetupEnglish();
 
 export function renderNewSessionDraftView(options: {
   context: ApplicationContext | undefined;
@@ -25,8 +27,9 @@ export function renderNewSessionDraftView(options: {
   isCatalogTarget: boolean;
   renderTargetBar: () => TemplateResult;
   requestUpdate: () => void;
-  onMessage: (message: string) => void;
+  onMessage: (message: string, mentions?: readonly HumanMention[]) => void;
   onOpenImage: (item: ImageLightboxItem) => void;
+  onOpenSidebar?: (content: SidebarContent) => void;
 }) {
   const {
     context,
@@ -42,11 +45,10 @@ export function renderNewSessionDraftView(options: {
     onMessage,
     onOpenImage,
   } = options;
-  const worktreeNameInvalid = place.worktree && !isWorktreeNameValid(place.worktreeName);
   const capabilities = submission.capabilities;
-  const voiceControl = dictation.render(draftOwnerKey);
+  const preferences = context?.theme.settings;
+  const voiceControl = dictation.render(draftOwnerKey, preferences?.realtimeTalkInputDeviceId);
   const dictationLocked = dictation.active;
-  const preparedTitle = titlePreparation.preparedTitle();
   return html`
     <div
       class="new-session-page__draft"
@@ -63,23 +65,7 @@ export function renderNewSessionDraftView(options: {
         titlePreparation.setComposing(false);
       }}
     >
-      ${renderTargetBar()}
-      ${worktreeNameInvalid ? renderDraftError(t("newSession.worktreeNameInvalid")) : nothing}
-      ${submission.submissionOutcomeUnknown
-        ? renderDraftError(
-            t(
-              submission.submissionOutcomeUnknown === "gateway-changed"
-                ? "newSession.createOutcomeUnknown"
-                : "newSession.placementSetupInterrupted",
-            ),
-            submission.pendingPlacement.sessionKey
-              ? {
-                  label: t("common.reset"),
-                  onClick: () => submission.clearPendingPlacementRecovery(),
-                }
-              : undefined,
-          )
-        : nothing}
+      ${renderTargetBar()} ${renderNewSessionDraftErrors(place, submission, isCatalogTarget)}
       ${renderNewSessionDraftComposer({
         agent: place.selectedAgent(),
         agentId: place.agentId,
@@ -87,13 +73,19 @@ export function renderNewSessionDraftView(options: {
         canSubmit: !submission.submitting && !dictationLocked && submission.canSubmit(),
         submitDisabledReason: submission.submitDisabledReason(),
         blockedSubmitNotice: submission.blockedSubmitNotice(),
-        dictationActive: dictation.active,
+        get dictationActive() {
+          return dictation.active;
+        },
         dictationPreview: dictation.previewDraft(),
         dictationStatus: dictation.renderStatus(),
         context,
         isCatalogTarget,
         draftOwnerKey,
-        message: submission.message,
+        get message() {
+          return submission.message;
+        },
+        mentions: submission.mentions,
+        getMentions: () => submission.mentions,
         visibility: submission.visibility,
         draftAvailable: capabilities.canStartAsDraft(context),
         ...capabilities.composerProps(context, gateway, place.agentId),
@@ -108,22 +100,22 @@ export function renderNewSessionDraftView(options: {
               mode: submission.permission.value,
               onSelect: (permissionMode) => submission.permission.set(permissionMode ?? undefined),
             }),
-        requiresModifier: loadSettings().chatSendShortcut === "modifier-enter",
+        requiresModifier: preferences?.chatSendShortcut === "modifier-enter",
         requestUpdate,
-        submitting: submission.submitting,
+        get submitting() {
+          return submission.submitting;
+        },
         textareaController: submission.composerTextarea,
         voiceControl,
-        messageLocked: Boolean(submission.pendingPlacement.sessionKey),
-        terminalAction: submission.showStartInTerminal()
-          ? {
-              canStart:
-                !submission.submitting && !dictationLocked && submission.canSubmit("terminal"),
-              disabledReason: submission.submitBlock("terminal")?.reason,
-              onStart: () => void submission.startInTerminal(),
-            }
-          : undefined,
+        get messageLocked() {
+          return Boolean(submission.pendingPlacement.sessionKey);
+        },
+        nativeTerminal: isCatalogTarget,
+        onUnsupportedAttachment: () =>
+          submission.setError(t("newSession.terminalAttachmentsUnsupported")),
         onInput: onMessage,
         onOpenImage,
+        onOpenSidebar: options.onOpenSidebar,
         onVisibilityChange: (visibility) => {
           if (!submission.submitting && !submission.pendingPlacement.sessionKey) {
             submission.setVisibility(visibility);
@@ -131,21 +123,15 @@ export function renderNewSessionDraftView(options: {
         },
         onSubmit: () => void submission.submit(),
         onBackgroundSubmit:
-          submission.visibility === "draft"
+          submission.visibility === "draft" || isCatalogTarget
             ? undefined
             : () => void submission.submit(undefined, true),
       })}
-      ${titlePreparation.available()
-        ? html`<div class="new-session-page__title-notice">
-            <span>${t("newSession.titlePreparationDisclosure")}</span>
-            ${preparedTitle
-              ? html`<span class="new-session-page__prepared-title" role="status"
-                  >${t("newSession.preparedTitle", { title: preparedTitle })}</span
-                >`
-              : nothing}
-          </div>`
-        : nothing}
-      ${renderNewSessionIncognitoNotice(submission.visibility === "incognito")}
+      ${
+        !isCatalogTarget
+          ? renderNewSessionIncognitoNotice(submission.visibility === "incognito")
+          : nothing
+      }
     </div>
   `;
 }
