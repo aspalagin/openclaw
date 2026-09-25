@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
+import { assertNoWindowsNetworkPath, safeFileURLToPath } from "@openclaw/fs-safe/advanced";
 import { maxBytesForKind, type MediaKind } from "@openclaw/media-core/constants";
 import { basenameFromAnyPath, extnameFromAnyPath } from "@openclaw/media-core/file-name";
 import {
@@ -23,11 +24,10 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
-import { assertNoWindowsNetworkPath, safeFileURLToPath } from "../infra/local-file-access.js";
 import type { PinnedDispatcherPolicy, SsrFPolicy } from "../infra/net/ssrf.js";
 import { isNotFoundPathError, isPathInside } from "../infra/path-guards.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
-import { getActivePluginHttpRouteRegistry } from "../plugins/runtime.js";
+import { getPluginRegistryForContext } from "../plugins/runtime.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -37,6 +37,13 @@ import { resolveUserPath } from "../utils.js";
 import { chunkItems } from "../utils/chunk-items.js";
 import { readOutboundMediaFile } from "./bounded-read-file.js";
 import { readRemoteMediaBuffer } from "./fetch.js";
+import {
+  getValidatedHostReadText,
+  isAllowedHostReadFictionBook,
+} from "./host-read-document-content.js";
+import { ImageOptimizationLimitError } from "./image-optimization-error.js";
+import { MAX_IMAGE_INPUT_PIXELS } from "./image-processor-config.js";
+import { createImageProcessorWithPixelLimits } from "./image-processor.js";
 import type { OutboundMediaReadFile } from "./load-options.js";
 import {
   assertLocalMediaAllowed,
@@ -49,8 +56,10 @@ import {
 import { MediaReferenceError, resolveInboundMediaReference } from "./media-reference.js";
 import {
   createImageProcessor,
+  isAnimatedWebpBuffer,
   readImageMetadataFromHeader,
   readImageProbeFromHeader,
+  type ImageMetadata,
 } from "./media-services.js";
 import { extractOriginalFilename, getMediaDir } from "./store.js";
 import { formatMediaSize } from "./store.shared.js";
@@ -123,7 +132,7 @@ async function resolveMediaStoreUriToPath(mediaUrl: string): Promise<string | nu
 }
 
 async function resolveHostedPluginMediaUrl(mediaUrl: string): Promise<string | null> {
-  const registry = getActivePluginHttpRouteRegistry();
+  const registry = getPluginRegistryForContext();
   for (const entry of registry?.hostedMediaResolvers ?? []) {
     try {
       const resolved = await entry.resolver(mediaUrl);
@@ -167,13 +176,12 @@ function resolveWebMediaOptions(params: {
 // without letting a tight channel cap buffer up to the 100MB document bound.
 const IMAGE_OPTIMIZE_HEADROOM_FACTOR = 4;
 
-const HEIC_MIME_RE = /^image\/hei[cf]$/i;
-const HEIC_EXT_RE = /\.(heic|heif)$/i;
 const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/;
 const HOST_READ_ALLOWED_DOCUMENT_MIMES = new Set([
   "application/msword",
   "application/pdf",
   "application/vnd.ms-excel",
+  "application/vnd.ms-excel.sheet.macroenabled.12",
   "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -217,89 +225,8 @@ function stripLegacyMediaDirectivePrefix(mediaUrl: string): string {
   return mediaUrl.replace(/^\s*MEDIA\s*:\s*/i, "");
 }
 
-function getTextStats(text: string): { printableRatio: number } {
-  if (!text) {
-    return { printableRatio: 0 };
-  }
-  let printable = 0;
-  let control = 0;
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0;
-    if (code === 9 || code === 10 || code === 13 || code === 32) {
-      printable += 1;
-      continue;
-    }
-    if (code < 32 || (code >= 0x7f && code <= 0x9f)) {
-      control += 1;
-      continue;
-    }
-    printable += 1;
-  }
-  const total = printable + control;
-  if (total === 0) {
-    return { printableRatio: 0 };
-  }
-  return { printableRatio: printable / total };
-}
-
-function hasSingleByteTextShape(buffer: Buffer): boolean {
-  if (buffer.length === 0) {
-    return true;
-  }
-  let asciiText = 0;
-  let control = 0;
-  for (const byte of buffer) {
-    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 0x20 && byte <= 0x7e)) {
-      asciiText += 1;
-      continue;
-    }
-    if (byte < 0x20 || byte === 0x7f) {
-      control += 1;
-    }
-  }
-  const total = buffer.length;
-  const highBytes = total - asciiText - control;
-  return control === 0 && asciiText / total >= 0.7 && highBytes / total <= 0.3;
-}
-
-function decodeHostReadText(buffer: Buffer): string | undefined {
-  if (buffer.length === 0) {
-    return "";
-  }
-  // UTF-16 decoding is intentionally omitted: TextDecoder("utf-16le/be") never throws on
-  // arbitrary byte pairs, so every byte pair is a valid (if meaningless) Unicode scalar —
-  // an attacker can prepend a BOM and pass getTextStats with printableRatio≈1.0 on pure
-  // binary garbage. The Latin-1 path below already covers the most common non-UTF-8
-  // real-world case (Excel CSV exports with accented chars like é, ñ) while remaining
-  // safe because hasSingleByteTextShape gates on byte shape *before* any decode.
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-  } catch {
-    if (!hasSingleByteTextShape(buffer)) {
-      return undefined;
-    }
-    // WHATWG latin1 decodes common Excel-style single-byte exports via Windows-1252 mapping.
-    return new TextDecoder("latin1").decode(buffer);
-  }
-}
-
 function isValidatedHostReadText(buffer?: Buffer): boolean {
   return getValidatedHostReadText(buffer) !== undefined;
-}
-
-function getValidatedHostReadText(buffer?: Buffer): string | undefined {
-  if (!buffer) {
-    return undefined;
-  }
-  if (buffer.length === 0) {
-    return "";
-  }
-  const text = decodeHostReadText(buffer);
-  if (text === undefined) {
-    return undefined;
-  }
-  const { printableRatio } = getTextStats(text);
-  return printableRatio > 0.95 ? text : undefined;
 }
 
 function resolveLocalMediaFileName(filePath: string): string | undefined {
@@ -312,49 +239,6 @@ function resolveLocalMediaFileName(filePath: string): string | undefined {
 function hasHtmlDocumentShape(text: string): boolean {
   const sample = text.trimStart().slice(0, 8192);
   return /^(?:<!doctype\s+html\b|<html\b)/iu.test(sample) || /<\/(?:html|body)>/iu.test(sample);
-}
-
-// FictionBook documents carry a fixed namespace on their root element. Match only that
-// root (after an optional BOM, XML declaration, comments, or doctype) so host-read
-// accepts demonstrable FictionBook content rather than every text-valid XML file.
-const FICTIONBOOK_ROOT_RE =
-  /^\uFEFF?(?:\s*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>))*\s*<(?:(?<prefix>[A-Za-z_][\w.-]*):)?FictionBook(?=[\s/>])(?<attributes>[^>]*)>/u;
-const FICTIONBOOK_NAMESPACE = "http://www.gribuser.ru/xml/fictionbook/2.0";
-const XML_ROOT_ATTRIBUTE_RE =
-  /\s+(?<name>[A-Za-z_:][\w:.-]*)\s*=\s*(?<quote>["'])(?<value>[\s\S]*?)\k<quote>/guy;
-
-function readXmlRootAttribute(attributes: string, name: string): string | undefined {
-  let cursor = 0;
-  let value: string | undefined;
-  while (cursor < attributes.length) {
-    XML_ROOT_ATTRIBUTE_RE.lastIndex = cursor;
-    const attribute = XML_ROOT_ATTRIBUTE_RE.exec(attributes);
-    if (!attribute) {
-      break;
-    }
-    cursor = XML_ROOT_ATTRIBUTE_RE.lastIndex;
-    if (attribute.groups?.name !== name) {
-      continue;
-    }
-    if (value !== undefined) {
-      return undefined;
-    }
-    value = attribute.groups.value;
-  }
-  return /^\s*\/?\s*$/u.test(attributes.slice(cursor)) ? value : undefined;
-}
-
-function hasFictionBookDocumentShape(text: string): boolean {
-  const root = FICTIONBOOK_ROOT_RE.exec(text.slice(0, 8192));
-  if (!root) {
-    return false;
-  }
-  const rootPrefix = root.groups?.prefix;
-  const namespaceAttribute = rootPrefix ? `xmlns:${rootPrefix}` : "xmlns";
-  return (
-    readXmlRootAttribute(root.groups?.attributes ?? "", namespaceAttribute) ===
-    FICTIONBOOK_NAMESPACE
-  );
 }
 
 type HostReadHtmlTrust =
@@ -543,40 +427,12 @@ function isAllowedHostReadTextAlias(mime: string | undefined, filePath?: string)
   return ext !== undefined && allowedExtensions.includes(ext);
 }
 
-function isAllowedHostReadFictionBook(params: {
-  sniffedContentType?: string;
-  filePath?: string;
-  buffer?: Buffer;
-}): boolean {
-  const sniffedMime = normalizeMimeType(params.sniffedContentType);
-  if (sniffedMime && sniffedMime !== "application/xml" && sniffedMime !== "text/xml") {
-    return false;
-  }
-  if (![".fb2", ".xml"].includes(getFileExtension(params.filePath) ?? "")) {
-    return false;
-  }
-  // The extension only signals operator intent; the accept decision is content-based for
-  // both .fb2 and .xml so the host-read boundary stays format-specific.
-  const text = getValidatedHostReadText(params.buffer);
-  return text !== undefined && hasFictionBookDocumentShape(text);
-}
-
 function formatCapLimit(label: string, cap: number, size: number): string {
   return `${label} exceeds ${formatMediaSize(cap)} limit (got ${formatMediaSize(size)})`;
 }
 
 function formatCapReduce(label: string, cap: number, size: number): string {
   return `${label} could not be reduced below ${formatMediaSize(cap)} (got ${formatMediaSize(size)})`;
-}
-
-function isHeicSource(opts: { contentType?: string; fileName?: string }): boolean {
-  if (opts.contentType && HEIC_MIME_RE.test(opts.contentType.trim())) {
-    return true;
-  }
-  if (opts.fileName && HEIC_EXT_RE.test(opts.fileName.trim())) {
-    return true;
-  }
-  return false;
 }
 
 function assertHostReadMediaAllowed(params: {
@@ -794,6 +650,7 @@ function imageMaxBytesForPolicy(policy?: ImageCompressionPolicy): number | undef
 function imageSatisfiesHardDimensionPolicy(
   buffer: Buffer,
   policy?: ImageCompressionPolicy,
+  metadata?: ImageMetadata,
 ): boolean {
   const models = policy?.models ?? [];
   const hardMaxSides = models
@@ -806,7 +663,7 @@ function imageSatisfiesHardDimensionPolicy(
     return true;
   }
 
-  const meta = readImageMetadataFromHeader(buffer);
+  const meta = metadata ?? readImageMetadataFromHeader(buffer);
   if (!meta) {
     return false;
   }
@@ -834,15 +691,15 @@ function resolvePreservableOriginalImageContentType(params: {
   buffer: Buffer;
   cap: number;
   contentType?: string;
-  fileName?: string;
   policy?: ImageCompressionPolicy;
 }): string | null {
   if (params.buffer.length > params.cap) {
     return null;
   }
   const declaredContentType = normalizeMimeType(params.contentType);
-  const actualContentType = detectPreservableImageMime(params.buffer);
-  if (!actualContentType) {
+  const probe = readImageProbeFromHeader(params.buffer);
+  const actualContentType = probe ? `image/${probe.format}` : undefined;
+  if (!probe || !isPreservableImageMime(actualContentType)) {
     return null;
   }
   const declaredPreservableContentType = isPreservableImageMime(declaredContentType)
@@ -854,36 +711,15 @@ function resolvePreservableOriginalImageContentType(params: {
   if (declaredContentType?.startsWith("image/") && !declaredPreservableContentType) {
     return null;
   }
-  const resolvedContentType = declaredPreservableContentType ?? actualContentType;
-  if (isHeicSource({ contentType: resolvedContentType, fileName: params.fileName })) {
-    return null;
-  }
-  const meta = readImageMetadataFromHeader(params.buffer);
-  if (!meta) {
-    return null;
-  }
   const preferredSide =
     resolveImageCompressionGrid(params.policy).sides[0] ?? DEFAULT_VISION_MAX_SIDE;
   if (
-    Math.max(meta.width, meta.height) > preferredSide ||
-    !imageSatisfiesHardDimensionPolicy(params.buffer, params.policy)
+    Math.max(probe.width, probe.height) > preferredSide ||
+    !imageSatisfiesHardDimensionPolicy(params.buffer, params.policy, probe)
   ) {
     return null;
   }
-  return resolvedContentType;
-}
-
-function detectPreservableImageMime(
-  buffer: Buffer,
-): "image/png" | "image/jpeg" | "image/webp" | null {
-  const format = readImageProbeFromHeader(buffer)?.format;
-  return format === "png"
-    ? "image/png"
-    : format === "jpeg"
-      ? "image/jpeg"
-      : format === "webp"
-        ? "image/webp"
-        : null;
+  return declaredPreservableContentType ?? actualContentType;
 }
 
 function isPreservableImageMime(
@@ -976,12 +812,18 @@ function logOptimizedImage(params: { originalSize: number; optimized: OptimizedI
 async function optimizeImageWithFallback(params: {
   buffer: Buffer;
   cap: number;
-  meta?: { contentType?: string; fileName?: string };
   imageCompression?: ImageCompressionPolicy;
+  maxInputPixels?: number;
 }): Promise<OptimizedImage> {
   const { buffer, cap } = params;
   const grid = resolveImageCompressionGrid(params.imageCompression);
-  const optimized = await createImageProcessor().encode(buffer, {
+  // Generic callers keep the shared decode limit. An owner with a bounded downscale path may
+  // widen source admission explicitly, while every encoded result remains under the output cap.
+  const processor = createImageProcessorWithPixelLimits({
+    inputPixels: params.maxInputPixels ?? MAX_IMAGE_INPUT_PIXELS,
+    outputPixels: MAX_IMAGE_INPUT_PIXELS,
+  });
+  const optimized = await processor.encode(buffer, {
     format: "auto",
     maxBytes: cap,
     opaque: { format: "jpeg" },
@@ -1015,29 +857,26 @@ export async function optimizeImageBufferForWebMedia(params: {
   fileName?: string;
   maxBytes?: number;
   imageCompression?: ImageCompressionPolicy;
+  maxInputPixels?: number;
 }): Promise<WebMediaResult> {
   const baseCap = params.maxBytes ?? maxBytesForKind("image");
   const cap = effectiveImageBytesCap(baseCap, params.imageCompression) ?? baseCap;
-  if (params.contentType === "image/gif") {
+  const isAnimatedWebp = isAnimatedWebpBuffer(params.buffer);
+  let originalContentType = isAnimatedWebp ? "image/webp" : (params.contentType ?? null);
+  if (originalContentType === "image/gif" || isAnimatedWebp) {
     if (params.buffer.length > cap) {
-      throw new Error(formatCapLimit("GIF", cap, params.buffer.length));
+      const format = isAnimatedWebp ? "Animated WebP" : "GIF";
+      throw new ImageOptimizationLimitError(formatCapLimit(format, cap, params.buffer.length), cap);
     }
     assertImageSatisfiesHardDimensionPolicy(params.buffer, params.imageCompression);
-    return {
+  } else {
+    originalContentType = resolvePreservableOriginalImageContentType({
       buffer: params.buffer,
+      cap,
       contentType: params.contentType,
-      kind: "image",
-      fileName: params.fileName,
-    };
+      policy: params.imageCompression,
+    });
   }
-  const meta = { contentType: params.contentType, fileName: params.fileName };
-  const originalContentType = resolvePreservableOriginalImageContentType({
-    buffer: params.buffer,
-    cap,
-    contentType: params.contentType,
-    fileName: params.fileName,
-    policy: params.imageCompression,
-  });
   if (originalContentType) {
     return {
       buffer: params.buffer,
@@ -1049,12 +888,15 @@ export async function optimizeImageBufferForWebMedia(params: {
   const optimized = await optimizeImageWithFallback({
     buffer: params.buffer,
     cap,
-    meta,
     imageCompression: params.imageCompression,
+    ...(params.maxInputPixels === undefined ? {} : { maxInputPixels: params.maxInputPixels }),
   });
   logOptimizedImage({ originalSize: params.buffer.length, optimized });
   if (optimized.buffer.length > cap) {
-    throw new Error(formatCapReduce("Media", cap, optimized.buffer.length));
+    throw new ImageOptimizationLimitError(
+      formatCapReduce("Media", cap, optimized.buffer.length),
+      cap,
+    );
   }
   return {
     buffer: optimized.buffer,
@@ -1102,34 +944,6 @@ async function loadWebMediaInternal(
     mediaUrl;
   mediaUrl = stripLegacyMediaDirectivePrefix(mediaUrl);
 
-  const optimizeAndClampImage = async (
-    buffer: Buffer,
-    cap: number,
-    meta?: { contentType?: string; fileName?: string },
-  ) => {
-    const originalSize = buffer.length;
-    const optimized = await optimizeImageWithFallback({
-      buffer,
-      cap,
-      meta,
-      ...(imageCompression ? { imageCompression } : {}),
-    });
-    logOptimizedImage({ originalSize, optimized });
-
-    if (optimized.buffer.length > cap) {
-      throw new Error(formatCapReduce("Media", cap, optimized.buffer.length));
-    }
-
-    const fileName = toImageFileName(meta?.fileName, optimized.mimeType);
-
-    return {
-      buffer: optimized.buffer,
-      contentType: optimized.mimeType,
-      kind: "image" as const,
-      fileName,
-    };
-  };
-
   const clampAndFinalize = async (params: {
     buffer: Buffer;
     contentType?: string;
@@ -1141,40 +955,26 @@ async function loadWebMediaInternal(
     // Otherwise fall back to per-kind defaults.
     const cap = maxBytes !== undefined ? maxBytes : maxBytesForKind(params.kind ?? "document");
     if (params.kind === "image") {
+      if (optimizeImages) {
+        return await optimizeImageBufferForWebMedia({
+          buffer: params.buffer,
+          contentType: params.contentType,
+          fileName: params.fileName,
+          maxBytes: cap,
+          imageCompression,
+        });
+      }
       const imageCap = effectiveImageBytesCap(cap, imageCompression) ?? cap;
       const isGif = params.contentType === "image/gif";
-      if (isGif || !optimizeImages) {
-        if (params.buffer.length > imageCap) {
-          throw new Error(formatCapLimit(isGif ? "GIF" : "Media", imageCap, params.buffer.length));
-        }
-        assertImageSatisfiesHardDimensionPolicy(params.buffer, imageCompression);
-        return {
-          buffer: params.buffer,
-          contentType: params.contentType,
-          kind: params.kind,
-          fileName: params.fileName,
-        };
+      if (params.buffer.length > imageCap) {
+        throw new Error(formatCapLimit(isGif ? "GIF" : "Media", imageCap, params.buffer.length));
       }
-      const originalContentType = resolvePreservableOriginalImageContentType({
-        buffer: params.buffer,
-        cap: imageCap,
-        contentType: params.contentType,
-        fileName: params.fileName,
-        policy: imageCompression,
-      });
-      if (originalContentType) {
-        return {
-          buffer: params.buffer,
-          contentType: originalContentType,
-          kind: params.kind,
-          fileName: params.fileName,
-        };
-      }
+      assertImageSatisfiesHardDimensionPolicy(params.buffer, imageCompression);
       return {
-        ...(await optimizeAndClampImage(params.buffer, imageCap, {
-          contentType: params.contentType,
-          fileName: params.fileName,
-        })),
+        buffer: params.buffer,
+        contentType: params.contentType,
+        kind: params.kind,
+        fileName: params.fileName,
       };
     }
     if (params.buffer.length > cap) {
@@ -1263,7 +1063,7 @@ async function loadWebMediaInternal(
       ? await resolveTrustedGeneratedHostReadHtml(mediaUrl)
       : undefined;
   if (hostReadDeclaredMime === "text/html" && !htmlTrust) {
-    throw new LocalMediaAccessError("path-not-allowed", HOST_READ_DECLARED_TEXT_ERROR);
+    throw new HostReadMediaTypeError(HOST_READ_DECLARED_TEXT_ERROR);
   }
 
   // Local path

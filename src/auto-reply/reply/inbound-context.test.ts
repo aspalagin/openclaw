@@ -1,6 +1,7 @@
 // Tests inbound context text built from sender and conversation metadata.
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { expectChannelInboundContextContract as expectInboundContextContract } from "../../channels/plugins/contracts/test-helpers.js";
+import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { MsgContext } from "../templating.js";
 import { appendChannelPromptContext } from "./channel-prompt-context.js";
 import { markInboundContextLabel } from "./inbound-context-marker.js";
@@ -239,6 +240,45 @@ describe("inbound context contract (providers + extensions)", () => {
 });
 
 describe("finalizeInboundContext text facts", () => {
+  it.each(["native", "text"] as const)(
+    "keeps suppressed %s command input literal across repeated finalization",
+    (source) => {
+      const body = "/new keep this as task text";
+      const ctx = finalizeInboundContext({
+        Body: body,
+        RawBody: body,
+        CommandBody: body,
+        BodyForCommands: body,
+        commandText: body,
+        CommandInterpretationSuppressed: true,
+        CommandAuthorized: true,
+        CommandSource: source,
+        CommandTargetSessionKey: "agent:other:main",
+        CommandTurn: {
+          kind: source === "native" ? "native" : "text-slash",
+          source,
+          authorized: true,
+          commandName: "new",
+          body,
+        },
+      });
+
+      const expected = {
+        agentText: body,
+        rawText: body,
+        BodyForAgent: body,
+        commandText: "",
+        BodyForCommands: "",
+        CommandAuthorized: false,
+        CommandSource: undefined,
+        CommandTurn: { kind: "normal", source: "message", authorized: false, body: "" },
+      };
+      expect(ctx).toMatchObject(expected);
+      expect(resolveCommandTurnTargetSessionKey(ctx)).toBeUndefined();
+      expect(finalizeInboundContext(ctx, { forceBodyForCommands: true })).toMatchObject(expected);
+    },
+  );
+
   it.each([
     {
       name: "BodyForCommands",
@@ -388,6 +428,23 @@ describe("finalizeInboundContext media cleanup", () => {
       MediaWorkspaceDir: "/tmp/workspace",
       MediaStaged: true,
     });
+  });
+
+  it("keeps a singular legacy MediaUrl off the second inbound attachment slot", () => {
+    const ctx = finalizeInboundContext({
+      Body: "two attachments",
+      MediaPaths: ["/tmp/a.png", "/tmp/b.png"],
+      MediaUrls: ["file:///tmp/a.png"],
+      MediaUrl: "file:///tmp/a.png",
+    });
+
+    expect(ctx.media).toHaveLength(2);
+    expect(ctx.media?.[0]).toMatchObject({
+      path: "/tmp/a.png",
+      url: "file:///tmp/a.png",
+    });
+    expect(ctx.media?.[1]).toMatchObject({ path: "/tmp/b.png" });
+    expect(ctx.media?.[1]?.url).toBeUndefined();
   });
 
   it("adopts a singular SDK-staged path without losing canonical facts or metadata", () => {

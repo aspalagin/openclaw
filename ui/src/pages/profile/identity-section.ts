@@ -11,10 +11,13 @@ import {
   renderSettingsValue,
 } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
+import { registerProfileEnglish } from "../../i18n/locales/en-profile.ts";
 import "../../components/viewer-facepile.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../../lib/external-link.ts";
 import type { PresenceViewer } from "../../lib/presence-users.ts";
 import { PROFILE_SETTINGS_TARGET_IDS } from "../config/settings-targets.ts";
+
+registerProfileEnglish();
 
 type IdentitySectionProps = {
   profile: UserProfile;
@@ -74,9 +77,11 @@ export function renderIdentitySection(props: IdentitySectionProps) {
                   }
                 }}
               >
-                ${props.busy === "avatar"
-                  ? t("profilePage.identity.processingAvatar")
-                  : t("profilePage.identity.chooseAvatar")}
+                ${
+                  props.busy === "avatar"
+                    ? t("profilePage.identity.processingAvatar")
+                    : t("profilePage.identity.chooseAvatar")
+                }
               </button>
               <input
                 type="file"
@@ -126,13 +131,15 @@ export function renderIdentitySection(props: IdentitySectionProps) {
             </form>
           `,
         })}
-        ${isOwnerProfile
-          ? nothing
-          : renderSettingsRow({
-              title: t("profilePage.identity.linkedEmails"),
-              description: t("profilePage.identity.linkedEmailsDescription"),
-              control: emails ? renderSettingsValue(emails) : nothing,
-            })}
+        ${
+          isOwnerProfile
+            ? nothing
+            : renderSettingsRow({
+                title: t("profilePage.identity.linkedEmails"),
+                description: t("profilePage.identity.linkedEmailsDescription"),
+                control: emails ? renderSettingsValue(emails) : nothing,
+              })
+        }
         ${renderSettingsRow({
           title: t("profilePage.identity.githubAccount"),
           description: isOwnerProfile
@@ -174,11 +181,13 @@ export function renderIdentitySection(props: IdentitySectionProps) {
           disabled: props.busy !== null || !githubIdentity,
           onChange: props.onGitCoauthorChange,
         })}
-        ${props.error
-          ? html`<div class="settings-row identity-error" role="alert">
-              <span class="settings-row__desc">${props.error}</span>
-            </div>`
-          : nothing}
+        ${
+          props.error
+            ? html`<div class="settings-row identity-error" role="alert">
+                <span class="settings-row__desc">${props.error}</span>
+              </div>`
+            : nothing
+        }
       `,
     )}
   </div>`;

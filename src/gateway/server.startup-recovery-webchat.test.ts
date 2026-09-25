@@ -188,20 +188,26 @@ it(
         [canceledRunId, canceledMessage],
         [survivorRunId, survivorMessage],
       ]);
-      await Promise.all(
-        Array.from(expectedQueuedMessages, async ([runId, message]) => {
-          await expect(
-            client.request("chat.send", {
-              sessionKey,
-              sessionId,
-              message,
-              deliver: false,
-              queueMode: "followup",
-              idempotencyKey: runId,
-            }),
-          ).resolves.toMatchObject({ runId, status: "started" });
-        }),
-      );
+      const sendQueuedTurn = async (runId: string, message: string) => {
+        await expect(
+          client.request("chat.send", {
+            sessionKey,
+            sessionId,
+            message,
+            deliver: false,
+            queueMode: "followup",
+            idempotencyKey: runId,
+          }),
+        ).resolves.toMatchObject({ runId, status: "started" });
+      };
+      // Hold the cancellation target in flight before queueing the survivor.
+      // A started ACK precedes insertion into the followup queue.
+      await sendQueuedTurn(canceledRunId, canceledMessage);
+      await vi.waitFor(() => {
+        const queue = getExistingFollowupQueue(sessionKey);
+        expect([...(queue?.inFlight ?? [])].map((item) => item.messageId)).toEqual([canceledRunId]);
+      });
+      await sendQueuedTurn(survivorRunId, survivorMessage);
       await vi.waitFor(() => {
         const queue = getExistingFollowupQueue(sessionKey);
         // Active sources remain in items; started ACKs can precede queue admission.
@@ -210,6 +216,7 @@ it(
           expectedQueuedMessages,
         );
         expect(queue?.inFlight).toHaveLength(1);
+        expect(queue?.items.map((item) => item.messageId)).toEqual([canceledRunId, survivorRunId]);
         expect(countPendingQueueItems(queue?.items ?? [], queue?.inFlight)).toBe(1);
         expect(targetRequests).toHaveLength(1);
       });
@@ -240,10 +247,10 @@ it(
       await vi.waitFor(() => expect(targetRequests).toHaveLength(2), { timeout: 30_000 });
       expect(targetRequests[1]).toContain(survivorMessage);
       expect(targetRequests[1]).not.toContain(canceledMessage);
+      await vi.waitFor(() => expect(getExistingFollowupQueue(sessionKey)).toBeUndefined());
       await expect(
         client.request("agent.wait", { runId: survivorRunId, timeoutMs: 30_000 }),
       ).resolves.toMatchObject({ status: "ok" });
-      await vi.waitFor(() => expect(getExistingFollowupQueue(sessionKey)).toBeUndefined());
       expect(targetRequests).toHaveLength(2);
     } finally {
       recoveryGate.resolve();

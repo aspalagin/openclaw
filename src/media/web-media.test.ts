@@ -13,8 +13,13 @@ import { resolveStateDir } from "../config/paths.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { createImageProcessor, resizeToJpeg } from "./media-services.js";
+import {
+  createImageProcessor,
+  readImageMetadataFromHeader,
+  resizeToJpeg,
+} from "./media-services.js";
 import { encodePngRgba, fillPixel } from "./png-encode.js";
 
 let effectiveImageBytesCap: typeof import("./web-media.js").effectiveImageBytesCap;
@@ -323,6 +328,19 @@ describe("loadWebMedia", () => {
     });
   }
 
+  async function createXlsmMimeFixture() {
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/xl/workbook.xml" ContentType="application/vnd.ms-excel.sheet.macroEnabled.main+xml"/></Types>',
+    );
+    zip.file(
+      "xl/workbook.xml",
+      '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>',
+    );
+    return await zip.generateAsync({ type: "nodebuffer" });
+  }
+
   it.each([
     {
       name: "allows localhost file URLs for local files",
@@ -388,6 +406,44 @@ describe("loadWebMedia", () => {
 
     expect(result.kind).toBe("image");
     expect(result.buffer.length).toBeGreaterThan(0);
+  });
+
+  it("resolves hosted media from the request registry, including an empty selection", async () => {
+    const mediaUrl = "/__test__/scoped-hosted-media";
+    const files = [
+      path.join(fixtureRoot, "owner-a.txt"),
+      path.join(fixtureRoot, "owner-b.txt"),
+    ] as const;
+    await Promise.all(files.map((file, index) => fs.writeFile(file, `OWNER_${index}`)));
+    const selected = createEmptyPluginRegistry();
+    selected.hostedMediaResolvers.push({
+      pluginId: "scoped-owner",
+      source: "test",
+      resolver: (url) => (url === mediaUrl ? files[0] : null),
+    });
+    const active = createEmptyPluginRegistry();
+    const activeResolver = vi.fn((url: string) => (url === mediaUrl ? files[1] : null));
+    active.hostedMediaResolvers.push({
+      pluginId: "global-owner",
+      source: "test",
+      resolver: activeResolver,
+    });
+    setActivePluginRegistry(active);
+    try {
+      expect((await loadWebMediaRaw(mediaUrl)).buffer.toString()).toBe("OWNER_1");
+      const scoped = await withPluginRuntimeRegistryScope(selected, () =>
+        loadWebMediaRaw(mediaUrl),
+      );
+      expect(scoped.buffer.toString()).toBe("OWNER_0");
+      await expect(
+        withPluginRuntimeRegistryScope(createEmptyPluginRegistry(), () =>
+          loadWebMediaRaw(mediaUrl),
+        ),
+      ).rejects.toBeInstanceOf(LocalMediaAccessError);
+      expect(activeResolver).toHaveBeenCalledTimes(1);
+    } finally {
+      resetPluginRuntimeStateForTest();
+    }
   });
 
   it("surfaces Rastermill decode failures when image optimization cannot produce a JPEG", async () => {
@@ -468,6 +524,60 @@ describe("loadWebMedia", () => {
     expect(many.qualities).toEqual([70, 60, 50, 40]);
   });
 
+  it.each(
+    (["png", "jpeg", "webp"] as const).flatMap((format) =>
+      [format, "heic", "heif"].map((extension) => ({ format, extension })),
+    ),
+  )(
+    "preserves original $format bytes with .$extension filename and image limits",
+    async ({ format, extension }) => {
+      const { optimizeImageBufferForWebMedia } = await import("./web-media.js");
+      const sourcePng = createSolidPngBuffer(32, 16, { r: 12, g: 34, b: 56 });
+      let buffer =
+        format === "png"
+          ? sourcePng
+          : (await createImageProcessor().encode(sourcePng, { format })).data;
+      if (format === "jpeg") {
+        const orientation = Buffer.from(
+          "ffe1002245786966000049492a0008000000010012010300010000000600000000000000",
+          "hex",
+        );
+        buffer = Buffer.concat([buffer.subarray(0, 2), orientation, buffer.subarray(2)]);
+        expect(readImageMetadataFromHeader(buffer)).toEqual({ width: 16, height: 32 });
+      }
+      const original = Buffer.from(buffer);
+      const contentType = `image/${format}`;
+      const fileName = `portrait.${extension}`;
+      const filePath = path.join(fixtureRoot, fileName);
+      await fs.writeFile(filePath, buffer);
+      for (const imageCompression of [
+        undefined,
+        { models: [{ maxSidePx: 32, maxPixels: 1024 }] },
+      ]) {
+        const loaded = await loadWebMedia(filePath, {
+          localRoots: [fixtureRoot],
+          maxBytes: 1024 * 1024,
+          imageCompression,
+        });
+        expect(loaded.buffer).toEqual(original);
+        expect(loaded.contentType).toBe(contentType);
+        expect(loaded.fileName).toBe(fileName);
+
+        const result = await optimizeImageBufferForWebMedia({
+          buffer,
+          contentType,
+          fileName,
+          maxBytes: 1024 * 1024,
+          imageCompression,
+        });
+        expect(result.buffer).toBe(buffer);
+        expect(result.buffer).toEqual(original);
+        expect(result.contentType).toBe(contentType);
+        expect(result.fileName).toBe(fileName);
+      }
+    },
+  );
+
   it("preserves in-limit GIF buffers when optimizing direct image buffers", async () => {
     const { optimizeImageBufferForWebMedia } = await import("./web-media.js");
     const buffer = createGifHeader(16, 16);
@@ -493,6 +603,61 @@ describe("loadWebMedia", () => {
         imageCompression: { models: [{ maxSidePx: 512 }] },
       }),
     ).rejects.toThrow(/dimensions exceed model image limits/i);
+  });
+
+  it.each(["local", "remote"] as const)(
+    "preserves the explicit GIF byte cap for optimized %s media",
+    async (source) => {
+      const buffer = createGifHeader(16, 16);
+      const fileName = `explicit-cap-${source}.gif`;
+      const filePath = path.join(fixtureRoot, fileName);
+      if (source === "local") {
+        await fs.writeFile(filePath, buffer);
+      }
+      const mediaUrl = source === "local" ? filePath : `https://example.test/${fileName}`;
+      const sourceOptions =
+        source === "local"
+          ? { localRoots: [fixtureRoot] }
+          : {
+              fetchImpl: vi.fn(
+                async () =>
+                  new Response(Buffer.from(buffer), {
+                    status: 200,
+                    headers: { "content-type": "image/gif" },
+                  }),
+              ),
+              ssrfPolicy: { allowedHostnames: ["example.test"] },
+            };
+
+      await expect(
+        loadWebMedia(mediaUrl, { ...sourceOptions, maxBytes: buffer.length - 1 }),
+      ).rejects.toThrow(/^GIF exceeds /);
+      const result = await loadWebMedia(mediaUrl, {
+        ...sourceOptions,
+        maxBytes: buffer.length,
+      });
+      expect(result.buffer).toEqual(buffer);
+      expect(result.contentType).toBe("image/gif");
+      expect(result.fileName).toBe(fileName);
+    },
+  );
+
+  it("rejects raw image dimensions instead of applying optimized image policy", async () => {
+    const buffer = createLargeColorBlockPng(64);
+    const filePath = path.join(fixtureRoot, "raw-dimensions.png");
+    await fs.writeFile(filePath, buffer);
+    const options = {
+      localRoots: [fixtureRoot],
+      maxBytes: 1024 * 1024,
+      imageCompression: { models: [{ maxSidePx: 32, preferredSidePx: 32 }] },
+    };
+
+    await expect(loadWebMediaRaw(filePath, options)).rejects.toThrow(
+      /dimensions exceed model image limits/i,
+    );
+    const optimized = await loadWebMedia(filePath, options);
+    expect(optimized.contentType).toBe("image/jpeg");
+    expect(readJpegDimensions(optimized.buffer)).toEqual({ width: 32, height: 32 });
   });
 
   it("renames opaque PNGs converted to JPEG across direct and local image owners", async () => {
@@ -835,6 +1000,51 @@ describe("loadWebMedia", () => {
       }),
       "path-not-allowed",
     );
+  });
+
+  it.each(["report.xlsm", "report.XLSM"])(
+    "allows byte-verified host-read XLSM without changing %s or its bytes",
+    async (fileName) => {
+      const body = await createXlsmMimeFixture();
+      const result = await loadDocumentWithHostRead(fileName, body);
+
+      expect(result.kind).toBe("document");
+      expect(result.contentType).toBe("application/vnd.ms-excel.sheet.macroenabled.12");
+      expect(result.fileName).toBe(fileName);
+      expect(result.buffer).toEqual(body);
+    },
+  );
+
+  it("rejects unverified text named as a host-read XLSM file", async () => {
+    await expectLoadWebMediaErrorCode(
+      loadDocumentWithHostRead("report.xlsm", "not a workbook"),
+      "path-not-allowed",
+    );
+  });
+
+  it("keeps the host-read XLSM root boundary and byte limit", async () => {
+    const body = await createXlsmMimeFixture();
+    const filePath = path.join(fixtureRoot, "bounded.xlsm");
+    await fs.writeFile(filePath, body);
+    const readFile = vi.fn((sourcePath: string) => fs.readFile(sourcePath));
+
+    await expectLoadWebMediaErrorCode(
+      loadWebMedia(filePath, {
+        localRoots: [workspaceDir],
+        readFile,
+        hostReadCapability: true,
+      }),
+      "path-not-allowed",
+    );
+    expect(readFile).not.toHaveBeenCalled();
+    await expect(
+      loadWebMedia(filePath, {
+        maxBytes: body.length - 1,
+        localRoots: [fixtureRoot],
+        readFile,
+        hostReadCapability: true,
+      }),
+    ).rejects.toThrow(/exceeds.*limit/i);
   });
 
   it("allows host-read CSV files", async () => {
@@ -1271,106 +1481,6 @@ describe("loadWebMedia", () => {
     expect(result.contentType).toBe(contentType);
   });
 
-  it("allows buffer-verified host-read EPUB files", async () => {
-    const epub = new JSZip();
-    epub.file("mimetype", "application/epub+zip", { compression: "STORE" });
-    epub.file("META-INF/container.xml", "<container/>");
-
-    const result = await loadDocumentWithHostRead(
-      "book.epub",
-      await epub.generateAsync({ type: "nodebuffer" }),
-    );
-
-    expect(result.kind).toBe("document");
-    expect(result.contentType).toBe("application/epub+zip");
-  });
-
-  const FICTIONBOOK_NAMESPACE = "http://www.gribuser.ru/xml/fictionbook/2.0";
-  const FICTIONBOOK_DOCUMENT =
-    '<?xml version="1.0" encoding="utf-8"?>\n<!-- exported -->\n' +
-    `<FictionBook xmlns="${FICTIONBOOK_NAMESPACE}" xmlns:l="http://www.w3.org/1999/xlink">` +
-    "<description/></FictionBook>";
-
-  it.each(["book.fb2", "book.xml"])(
-    "allows validated host-read FictionBook documents for %s",
-    async (fileName) => {
-      const result = await loadDocumentWithHostRead(fileName, FICTIONBOOK_DOCUMENT);
-
-      expect(result.kind).toBe("document");
-      expect(result.contentType).toBe("text/xml");
-    },
-  );
-
-  it("allows a prefixed FictionBook root behind an XML doctype", async () => {
-    const result = await loadDocumentWithHostRead(
-      "prefixed.fb2",
-      '\uFEFF<?xml version="1.0"?><!DOCTYPE FictionBook>' +
-        `<fb:FictionBook xmlns:fb='${FICTIONBOOK_NAMESPACE}'/>`,
-    );
-
-    expect(result.kind).toBe("document");
-  });
-
-  it.each([
-    {
-      name: "generic XML with a .xml extension",
-      fileName: "settings.xml",
-      body: '<?xml version="1.0" encoding="utf-8"?><settings><option name="theme">dark</option></settings>',
-    },
-    {
-      name: "generic XML with a .fb2 extension",
-      fileName: "settings.fb2",
-      body: '<?xml version="1.0" encoding="utf-8"?><settings><option name="theme">dark</option></settings>',
-    },
-    {
-      name: "a FictionBook root without the FictionBook namespace",
-      fileName: "unnamespaced.xml",
-      body: '<?xml version="1.0" encoding="utf-8"?><FictionBook><description/></FictionBook>',
-    },
-    {
-      name: "an unprefixed FictionBook root with the namespace on another prefix",
-      fileName: "mismatched-default.xml",
-      body: '<FictionBook xmlns="urn:not-fictionbook" xmlns:fb="http://www.gribuser.ru/xml/fictionbook/2.0"/>',
-    },
-    {
-      name: "a prefixed FictionBook root with the namespace on another prefix",
-      fileName: "mismatched-prefix.fb2",
-      body: '<x:FictionBook xmlns:x="urn:not-fictionbook" xmlns:fb="http://www.gribuser.ru/xml/fictionbook/2.0"/>',
-    },
-    {
-      name: "an unprefixed FictionBook root with a namespace decoy inside another attribute",
-      fileName: "decoy-default.xml",
-      body: `<FictionBook note=' xmlns="${FICTIONBOOK_NAMESPACE}" '/>`,
-    },
-    {
-      name: "a prefixed FictionBook root with a namespace decoy inside another attribute",
-      fileName: "decoy-prefix.fb2",
-      body: `<x:FictionBook xmlns:x="urn:not-fictionbook" note=' xmlns:x="${FICTIONBOOK_NAMESPACE}" '/>`,
-    },
-    {
-      name: "a FictionBook element nested below a foreign root",
-      fileName: "wrapped.xml",
-      body: '<?xml version="1.0"?><settings><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"/></settings>',
-    },
-  ])("rejects text-valid host-read $name", async ({ fileName, body }) => {
-    await expectLoadWebMediaErrorCode(loadDocumentWithHostRead(fileName, body), "path-not-allowed");
-  });
-
-  it("rejects binary data disguised as a FictionBook file", async () => {
-    const filePath = path.join(fixtureRoot, "not-a-book.fb2");
-    await fs.writeFile(filePath, Buffer.from([0, 0xff, 0x10, 0x80]));
-
-    await expectLoadWebMediaErrorCode(
-      loadWebMedia(filePath, {
-        maxBytes: 1024 * 1024,
-        localRoots: "any",
-        readFile: async (inputPath) => await fs.readFile(inputPath),
-        hostReadCapability: true,
-      }),
-      "path-not-allowed",
-    );
-  });
-
   it("rejects binary data disguised as a CSV file", async () => {
     const fakeCsv = path.join(fixtureRoot, "evil.csv");
     // Declared plain-text aliases must use the text validator path even when the
@@ -1612,11 +1722,12 @@ describe("loadWebMedia", () => {
     async (swapOpen, expectedCode) => {
       const id = `signal-hardlink-race-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
       const filePath = path.join(stateDir, "media", "inbound", id);
-      const outsidePath = path.join(fixtureRoot, `${id}.outside`);
+      const outsidePath = path.join(stateDir, `${id}.outside`);
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, "inside");
       await fs.writeFile(outsidePath, "outside-secret");
       let matchingOpens = 0;
+      let linkCreated = false;
       __setFsSafeTestHooksForTest({
         afterPreOpenLstat: async (openedPath) => {
           if (path.basename(openedPath) !== id) {
@@ -1628,6 +1739,7 @@ describe("loadWebMedia", () => {
           }
           await fs.rm(filePath);
           await fs.link(outsidePath, filePath);
+          linkCreated = true;
         },
       });
 
@@ -1637,6 +1749,7 @@ describe("loadWebMedia", () => {
           expectedCode,
         );
         expect(matchingOpens).toBe(swapOpen);
+        expect(linkCreated).toBe(true);
       } finally {
         await fs.rm(filePath, { force: true });
         await fs.rm(outsidePath, { force: true });
@@ -1717,7 +1830,10 @@ describe("loadWebMedia", () => {
       async () =>
         new Response(Buffer.from(original), {
           status: 200,
-          headers: { "content-type": "image/png" },
+          headers: {
+            "content-type": "image/png",
+            "content-length": String(10 * 1024 * 1024),
+          },
         }),
     );
 

@@ -12,14 +12,10 @@ import {
 } from "../../components/settings-ui.ts";
 import { workerCapacityPresentation } from "../../components/worker-capacity.ts";
 import { t } from "../../i18n/index.ts";
-import {
-  formatDurationCompact,
-  formatList,
-  formatRelativeTimestamp,
-  formatTimeAgo,
-} from "../../lib/format.ts";
+import { formatDurationCompact } from "../../lib/format-duration.ts";
+import { formatList, formatRelativeTimestamp, formatTimeAgo } from "../../lib/format.ts";
 import { macFamilyLabel } from "../../lib/mac-form-factor.ts";
-import type { DeviceTokenSummary, InventoryRemovalRequest } from "../../lib/nodes/index.ts";
+import type { DeviceTokenSummary } from "../../lib/nodes/index.ts";
 import {
   buildDeviceInventory,
   findGatewayPresence,
@@ -29,6 +25,7 @@ import {
   type DeviceInventoryEntry,
   type DeviceInventoryGroup,
 } from "../../lib/nodes/inventory.ts";
+import type { InventoryRemovalRequest } from "../../lib/nodes/page-operations.ts";
 import { prettifyPlatform } from "../../lib/platform-label.ts";
 import { renderCapabilityChips } from "./capability-chips.ts";
 import { deviceDesktopEnvironment, renderDeviceEntryMenu } from "./entry-menu.ts";
@@ -73,18 +70,20 @@ export function renderDeviceInventory(props: DevicesProps) {
   const stale = listStaleInventoryEntries(groups);
   const loading = props.loading || props.devicesLoading;
   const actions = html`
-    ${stale.length > 0
-      ? html`
-          <button
-            class="btn btn--sm danger"
-            title=${props.canManagePairing ? "" : t("devices.readOnly.pairingRequired")}
-            ?disabled=${!props.canManagePairing}
-            @click=${() => props.onInventoryCleanup(stale.map(toRemovalRequest))}
-          >
-            ${icons.trash} ${t("devices.inventory.cleanupStale", { count: String(stale.length) })}
-          </button>
-        `
-      : nothing}
+    ${
+      stale.length > 0
+        ? html`
+            <button
+              class="btn btn--sm danger"
+              title=${props.canManagePairing ? "" : t("devices.readOnly.pairingRequired")}
+              ?disabled=${!props.canManagePairing}
+              @click=${() => props.onInventoryCleanup(stale.map(toRemovalRequest))}
+            >
+              ${icons.trash} ${t("devices.inventory.cleanupStale", { count: String(stale.length) })}
+            </button>
+          `
+        : nothing
+    }
     <button
       class="btn"
       title=${props.canPairDevice ? "" : t("devices.pairing.adminRequired")}
@@ -98,24 +97,30 @@ export function renderDeviceInventory(props: DevicesProps) {
   // this section's empty state depends only on its own rows.
   const empty = groups.length === 0 && !gatewayPresence;
   const deviceRows = html`
-    ${gatewayPresence
-      ? renderPresenceRow({ kind: "gateway", entry: gatewayPresence }, props)
-      : nothing}
-    ${loading && groups.length === 0
-      ? renderSettingsLoadingSkeleton()
-      : empty
-        ? renderSettingsEmpty(t("devices.inventory.empty"))
-        : groups.map((group) => renderInventoryGroup(group, props))}
+    ${
+      gatewayPresence
+        ? renderPresenceRow({ kind: "gateway", entry: gatewayPresence }, props)
+        : nothing
+    }
+    ${
+      loading && groups.length === 0
+        ? renderSettingsLoadingSkeleton()
+        : empty
+          ? renderSettingsEmpty(t("devices.inventory.empty"))
+          : groups.map((group) => renderInventoryGroup(group, props))
+    }
   `;
   return html`
     ${props.devicesError ? html`<div class="callout danger">${props.devicesError}</div>` : nothing}
     ${props.lastError ? html`<div class="callout danger">${props.lastError}</div>` : nothing}
-    ${pending.length > 0
-      ? renderSettingsSection(
-          { title: t("devices.inventory.pendingApproval"), count: pending.length },
-          renderPendingDeviceRows(pending, paired, props),
-        )
-      : nothing}
+    ${
+      pending.length > 0
+        ? renderSettingsSection(
+            { title: t("devices.inventory.pendingApproval"), count: pending.length },
+            renderPendingDeviceRows(pending, paired, props),
+          )
+        : nothing
+    }
     ${renderSettingsSection(
       {
         title: t("devices.inventory.title"),
@@ -124,12 +129,14 @@ export function renderDeviceInventory(props: DevicesProps) {
       },
       deviceRows,
     )}
-    ${unpairedPresence.length > 0
-      ? renderSettingsSection(
-          { title: t("devices.inventory.connectedWithoutPairing") },
-          unpairedPresence.map((entry) => renderPresenceRow({ kind: "unpaired", entry }, props)),
-        )
-      : nothing}
+    ${
+      unpairedPresence.length > 0
+        ? renderSettingsSection(
+            { title: t("devices.inventory.connectedWithoutPairing") },
+            unpairedPresence.map((entry) => renderPresenceRow({ kind: "unpaired", entry }, props)),
+          )
+        : nothing
+    }
   `;
 }
 
@@ -239,10 +246,12 @@ function formatInputRecency(lastInputSeconds: number): string {
   });
 }
 
-function entryMetaLine(entry: DeviceInventoryEntry): string {
+function identityMetaParts(
+  entry: Pick<PresenceEntry, "platform" | "deviceFamily" | "modelIdentifier" | "version">,
+): string[] {
   const parts: string[] = [];
   if (entry.platform) {
-    parts.push(prettifyPlatform(entry.platform));
+    parts.push(prettifyPlatform(entry.platform, entry.deviceFamily));
   }
   if (entry.modelIdentifier) {
     const family = macFamilyLabel(entry.modelIdentifier);
@@ -254,6 +263,11 @@ function entryMetaLine(entry: DeviceInventoryEntry): string {
   if (entry.version) {
     parts.push(entry.version);
   }
+  return parts;
+}
+
+function entryMetaLine(entry: DeviceInventoryEntry): string {
+  const parts = identityMetaParts(entry);
   if (entry.node?.workerBundle?.status === "installed") {
     parts.push(t("devices.inventory.workerVersion", { version: entry.node.workerBundle.version }));
   }
@@ -300,40 +314,52 @@ function renderEntryDetails(entry: DeviceInventoryEntry, props: DevicesProps) {
       <dl class="device-entry__facts">
         <dt class="settings-row__desc">${t("devices.inventory.deviceIdLabel")}</dt>
         <dd class="settings-row__value settings-row__value--mono" title=${entry.id}>${entry.id}</dd>
-        ${entry.remoteIp
-          ? html`<dt class="settings-row__desc">${t("devices.inventory.remoteIpLabel")}</dt>
-              <dd class="settings-row__value settings-row__value--mono">${entry.remoteIp}</dd>`
-          : nothing}
-        ${scopes.length > 0
-          ? html`<dt class="settings-row__desc">${t("devices.inventory.scopesLabel")}</dt>
-              <dd class="device-entry__scopes">
-                ${scopes.map(
-                  (scope) =>
-                    html`<span class="device-capability device-capability--scope">${scope}</span>`,
-                )}
-              </dd>`
-          : nothing}
-        ${tokens.length > 0
-          ? html`<dt class="settings-row__desc">${t("devices.inventory.tokens")}</dt>
-              <dd class="device-entry__tokens">
-                <table class="device-token-table" aria-label=${t("devices.inventory.tokens")}>
-                  <thead>
-                    <tr>
-                      <th scope="col">${t("devices.inventory.tokenRole")}</th>
-                      <th scope="col">${t("devices.inventory.tokenStatus")}</th>
-                      <th scope="col">${t("devices.inventory.scopesLabel")}</th>
-                      <th scope="col">${t("devices.inventory.tokenAge")}</th>
-                      <th scope="col">${t("devices.inventory.actions")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${tokens.map((token) =>
-                      renderTokenRow({ id: entry.id, name: entry.name }, token, props),
-                    )}
-                  </tbody>
-                </table>
-              </dd>`
-          : nothing}
+        ${
+          entry.remoteIp
+            ? html`<dt class="settings-row__desc">${t("devices.inventory.remoteIpLabel")}</dt>
+                <dd class="settings-row__value settings-row__value--mono">${entry.remoteIp}</dd>`
+            : nothing
+        }
+        ${
+          scopes.length > 0
+            ? html`<dt class="settings-row__desc">${t("devices.inventory.scopesLabel")}</dt>
+                <dd class="device-entry__scopes">
+                  ${scopes.map(
+                    (scope) =>
+                      html`<span class="device-capability device-capability--scope"
+                        >${scope}</span
+                      >`,
+                  )}
+                </dd>`
+            : nothing
+        }
+        ${
+          tokens.length > 0
+            ? html`<dt class="settings-row__desc">${t("devices.inventory.tokens")}</dt>
+                <dd class="device-entry__tokens">
+                  <table
+                    class="device-token-table settings-table--stacked"
+                    role="table"
+                    aria-label=${t("devices.inventory.tokens")}
+                  >
+                    <thead>
+                      <tr>
+                        <th scope="col">${t("devices.inventory.tokenRole")}</th>
+                        <th scope="col">${t("devices.inventory.tokenStatus")}</th>
+                        <th scope="col">${t("devices.inventory.scopesLabel")}</th>
+                        <th scope="col">${t("devices.inventory.tokenAge")}</th>
+                        <th scope="col">${t("devices.inventory.actions")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${tokens.map((token) =>
+                        renderTokenRow({ id: entry.id, name: entry.name }, token, props),
+                      )}
+                    </tbody>
+                  </table>
+                </dd>`
+            : nothing
+        }
         ${renderCommandLine(commands)}
       </dl>
     </details>
@@ -380,6 +406,14 @@ function renderInventoryEntry(entry: DeviceInventoryEntry, props: DevicesProps) 
           deviceId: entry.id,
           desktopEnvironment,
           pendingRequestId,
+          onEditAlias: entry.device
+            ? () =>
+                props.onDeviceRename({
+                  id: entry.id,
+                  name: entry.name,
+                  operatorLabel: entry.device?.operatorLabel,
+                })
+            : undefined,
           onRemove: () => props.onInventoryRemove(toRemovalRequest(entry)),
         })}
       </div>
@@ -388,34 +422,16 @@ function renderInventoryEntry(entry: DeviceInventoryEntry, props: DevicesProps) 
   `;
 }
 
-function presenceMetaParts(entry: PresenceEntry): string[] {
-  const parts: string[] = [];
-  if (entry.platform) {
-    parts.push(prettifyPlatform(entry.platform));
-  }
-  if (entry.modelIdentifier) {
-    const family = macFamilyLabel(entry.modelIdentifier);
-    if (family) {
-      parts.push(family);
-    }
-    parts.push(entry.modelIdentifier);
-  }
-  if (entry.version) {
-    parts.push(entry.version);
-  }
-  if (entry.lastInputSeconds != null) {
-    parts.push(formatInputRecency(entry.lastInputSeconds));
-  }
-  return parts;
-}
-
 function renderPresenceRow(
   presence: { kind: "gateway"; entry: PresenceEntry } | { kind: "unpaired"; entry: PresenceEntry },
   props: DevicesProps,
 ) {
   const { entry } = presence;
   const gateway = presence.kind === "gateway";
-  const parts = presenceMetaParts(entry);
+  const parts = identityMetaParts(entry);
+  if (entry.lastInputSeconds != null) {
+    parts.push(formatInputRecency(entry.lastInputSeconds));
+  }
   if (gateway && props.gatewaySystemInfo) {
     parts.push(
       t("devices.inventory.uptime", {
@@ -444,14 +460,18 @@ function renderPresenceRow(
         <div class="device-entry__heading">
           <span class="settings-row__title">${title}</span>
           <span class="device-entry__status">
-            ${gateway
-              ? renderSettingsStatus({ kind: "accent", label: t("devices.inventory.gateway") })
-              : renderSettingsStatus({ kind: "muted", label: t("devices.inventory.unpaired") })}
+            ${
+              gateway
+                ? renderSettingsStatus({ kind: "accent", label: t("devices.inventory.gateway") })
+                : renderSettingsStatus({ kind: "muted", label: t("devices.inventory.unpaired") })
+            }
           </span>
         </div>
-        ${parts.length > 0
-          ? html`<span class="settings-row__desc">${parts.join(" · ")}</span>`
-          : nothing}
+        ${
+          parts.length > 0
+            ? html`<span class="settings-row__desc">${parts.join(" · ")}</span>`
+            : nothing
+        }
         ${gateway ? renderHostStats(props.gatewaySystemInfo) : nothing}
       </div>
       <div class="settings-row__control">
@@ -506,11 +526,11 @@ function renderTokenRow(
   );
   return html`
     <tr>
-      <td>${tokenSummary.role}</td>
-      <td>${status}</td>
-      <td>${scopes}</td>
-      <td>${when}</td>
-      <td>
+      <td data-label=${t("devices.inventory.tokenRole")}>${tokenSummary.role}</td>
+      <td data-label=${t("devices.inventory.tokenStatus")}>${status}</td>
+      <td data-label=${t("devices.inventory.scopesLabel")}>${scopes}</td>
+      <td data-label=${t("devices.inventory.tokenAge")}>${when}</td>
+      <td data-label=${t("devices.inventory.actions")}>
         <div class="device-entry__token-actions">
           <button
             class="btn btn--sm"
@@ -519,17 +539,19 @@ function renderTokenRow(
           >
             ${t("devices.inventory.rotate")}
           </button>
-          ${tokenSummary.revokedAtMs
-            ? nothing
-            : html`
-                <button
-                  class="btn btn--sm danger"
-                  ?disabled=${!props.canManagePairing}
-                  @click=${() => props.onDeviceRevoke(device.id, tokenSummary.role)}
-                >
-                  ${t("devices.inventory.revoke")}
-                </button>
-              `}
+          ${
+            tokenSummary.revokedAtMs
+              ? nothing
+              : html`
+                  <button
+                    class="btn btn--sm danger"
+                    ?disabled=${!props.canManagePairing}
+                    @click=${() => props.onDeviceRevoke(device.id, tokenSummary.role)}
+                  >
+                    ${t("devices.inventory.revoke")}
+                  </button>
+                `
+          }
         </div>
       </td>
     </tr>
