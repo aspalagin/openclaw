@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { onSessionLifecycleEvent } from "../../sessions/session-lifecycle-events.js";
@@ -21,11 +21,12 @@ import {
   loadSessionEntry,
   MAX_SESSION_PARTICIPANTS,
   patchSessionEntryCore,
-  recordSessionParticipant,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
+import { readCommittedSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { copySessionNodeArtifactsForRepair } from "./session-accessor.sqlite-node-artifacts.js";
+import { recordSessionParticipant } from "./session-accessor.sqlite-participants.native.js";
 import type { SessionParticipantIdentity } from "./session-participant-identity.js";
 
 const profile = (id: string): SessionParticipantIdentity => ({ type: "profile", id });
@@ -37,9 +38,80 @@ const remote = (id: string, domain = "workspace"): SessionParticipantIdentity =>
   id,
 });
 
-afterEach(() => closeOpenClawAgentDatabasesForTest());
+afterEach(() => {
+  closeOpenClawAgentDatabasesForTest();
+  vi.useRealTimers();
+});
 
 describe("SQLite session participants", () => {
+  it.each(["local", "foreign"])(
+    "publishes fresh participants after an untracked %s write during patch preparation",
+    async (writer) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:changed" };
+        await upsertSessionEntryCore(scope, { sessionId: "changed", updatedAt: 1 });
+        recordSessionParticipant(scope, { identity: remote("before"), promptedAt: 1 });
+        listSessionEntriesCore({ ...scope, projection: "list" });
+        const database = openOpenClawAgentDatabase(scope);
+        await patchSessionEntryCore(
+          scope,
+          () => {
+            const connection = writer === "foreign" ? new DatabaseSync(database.path) : database.db;
+            try {
+              connection
+                .prepare("UPDATE session_participants SET actor_id = ? WHERE session_key = ?")
+                .run("after", scope.sessionKey);
+            } finally {
+              if (writer === "foreign") {
+                connection.close();
+              }
+            }
+            return { label: "committed" };
+          },
+          { skipMaintenance: true },
+        );
+        // Gateway row projections borrow this committed cache without another freshness read.
+        expect(readCommittedSessionEntryCache(database.db)?.get(scope.sessionKey)).toMatchObject({
+          label: "committed",
+          participants: [{ identity: remote("after") }],
+          participantCount: 1,
+        });
+      });
+    },
+  );
+
+  it("reuses current participant facts when publishing repeated entry patches", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:busy" };
+      await upsertSessionEntryCore(scope, { sessionId: "busy", updatedAt: 1 });
+      recordSessionParticipant(scope, { identity: remote("existing"), promptedAt: 1 });
+      const read = () => listSessionEntriesCore({ ...scope, projection: "list" })[0]?.entry;
+      read();
+      const database = openOpenClawAgentDatabase(scope);
+      const reads = trackSqliteStatementExecutions(database.db, ["participants"], (sql) =>
+        sql.startsWith('select * from "session_participants"') ? "participants" : null,
+      );
+      try {
+        for (let index = 0; index < 100; index++) {
+          await patchSessionEntryCore(scope, () => ({ label: `Update ${index}` }), {
+            skipMaintenance: true,
+          });
+        }
+        // Metadata-only updates retain the participant owner's current revision.
+        expect(reads.counts.participants).toBe(0);
+        recordSessionParticipant(scope, { identity: remote("new"), promptedAt: 2 });
+        expect(reads.counts.participants).toBe(1);
+        expect(read()).toMatchObject({
+          label: "Update 99",
+          participants: ["existing", "new"].map((id) => ({ identity: remote(id) })),
+          participantCount: 2,
+        });
+      } finally {
+        reads.restore();
+      }
+    });
+  });
+
   it("commits a prepared node patch without newly decoding invalid participant rows", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const scope = {
@@ -87,6 +159,9 @@ describe("SQLite session participants", () => {
     "keeps a reentrant observer's newer cached state after an outer %s write",
     async (kind) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        if (kind === "external-entry") {
+          vi.useFakeTimers({ toFake: ["setImmediate"] });
+        }
         const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:reentrant" };
         await upsertSessionEntryCore(scope, {
           sessionId: "reentrant",
@@ -113,6 +188,7 @@ describe("SQLite session participants", () => {
             } finally {
               database.close();
             }
+            vi.runOnlyPendingTimers();
           } else {
             runOpenClawAgentWriteTransaction((database) => {
               writeSessionEntry(database, scope.sessionKey, {
@@ -185,6 +261,9 @@ describe("SQLite session participants", () => {
     "does not hide an untracked sibling change during participant publication: $mutation, $write",
     async ({ mutation, write }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        if (mutation === "external-participant") {
+          vi.useFakeTimers({ toFake: ["setImmediate"] });
+        }
         const scope = { agentId: "main", env: state.env };
         const target = { ...scope, sessionKey: "agent:main:target" };
         const sibling = { ...scope, sessionKey: "agent:main:sibling" };
@@ -216,6 +295,7 @@ describe("SQLite session participants", () => {
           } finally {
             external.close();
           }
+          vi.runOnlyPendingTimers();
         }
         runOpenClawAgentWriteTransaction((db) => {
           if (mutation.endsWith("before")) {
@@ -596,16 +676,19 @@ describe("SQLite session participants", () => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:merged-full" };
         const old = ensureProfileForEmail("old@example.test", { env: state.env });
+        const other = ensureProfileForEmail("other@example.test", { env: state.env });
         const current = ensureProfileForEmail("current@example.test", { env: state.env });
         await upsertSessionEntryCore(scope, { sessionId: "merged-full", updatedAt: 1 });
         recordSessionParticipant(scope, { identity: profile(old.id), promptedAt: 10 });
+        recordSessionParticipant(scope, { identity: profile(other.id), promptedAt: 10 });
         if (hasCanonicalRow) {
           recordSessionParticipant(scope, { identity: profile(current.id), promptedAt: 20 });
         }
-        for (let index = hasCanonicalRow ? 2 : 1; index < MAX_SESSION_PARTICIPANTS; index++) {
+        for (let index = hasCanonicalRow ? 3 : 2; index < MAX_SESSION_PARTICIPANTS; index++) {
           recordSessionParticipant(scope, { identity: remote(`remote-${index}`), promptedAt: 30 });
         }
         linkEmail("old@example.test", current.id, { env: state.env });
+        linkEmail("other@example.test", current.id, { env: state.env });
         expect(
           recordSessionParticipant(scope, { identity: profile(current.id), promptedAt: 40 }),
         ).toBe("updated");
@@ -613,14 +696,36 @@ describe("SQLite session participants", () => {
         expect(records).toHaveLength(MAX_SESSION_PARTICIPANTS);
         const profiles = records.filter((record) => record.identity.type === "profile");
         expect(profiles.reduce((count, record) => count + record.contributionCount, 0)).toBe(
-          hasCanonicalRow ? 3 : 2,
+          hasCanonicalRow ? 4 : 3,
         );
-        expect(
-          profiles.find((record) => record.identity.id === (hasCanonicalRow ? current.id : old.id)),
-        ).toMatchObject({ contributionCount: 2, lastPromptedAt: 40 });
+        const updatedId = hasCanonicalRow ? current.id : [old.id, other.id].toSorted()[0];
+        expect(profiles.find((record) => record.identity.id === updatedId)).toMatchObject({
+          contributionCount: 2,
+          lastPromptedAt: 40,
+        });
       });
     },
   );
+
+  it("keeps raw actor identity equality when SQLite replaces a lone surrogate", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:raw-identity" };
+      await upsertSessionEntryCore(scope, { sessionId: "raw-identity", updatedAt: 1 });
+      recordSessionParticipant(scope, { identity: remote("\ud800"), promptedAt: 10 });
+      for (let index = 1; index < MAX_SESSION_PARTICIPANTS; index++) {
+        recordSessionParticipant(scope, { identity: remote(`remote-${index}`), promptedAt: 10 });
+      }
+      expect(recordSessionParticipant(scope, { identity: remote("\ud800"), promptedAt: 20 })).toBe(
+        "capped",
+      );
+      expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toContainEqual({
+        identity: remote("\ufffd"),
+        contributionCount: 1,
+        firstPromptedAt: 10,
+        lastPromptedAt: 10,
+      });
+    });
+  });
 
   it("keeps the admission bound, unknown first time, reset history, and deletion ownership", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
@@ -716,6 +821,20 @@ describe("SQLite session participants", () => {
         rows.find((row) => row.identity.type === "profile" && row.identity.id === "profile-0")
           ?.contributionCount,
       ).toBe(2);
+      const reads = trackSqliteStatementExecutions(target.db, ["participants"], (sql) =>
+        sql.includes('from "session_participants"') ? "participants" : null,
+      );
+      try {
+        expect(
+          recordSessionParticipant(targetScope, {
+            identity: profile("profile-0"),
+            promptedAt: 40,
+          }),
+        ).toBe("updated");
+        expect(reads.rowCounts.participants).toBeLessThanOrEqual(1);
+      } finally {
+        reads.restore();
+      }
       expect(
         recordSessionParticipant(targetScope, { identity: profile("overflow"), promptedAt: 40 }),
       ).toBe("capped");

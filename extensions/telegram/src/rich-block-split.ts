@@ -1,10 +1,8 @@
 // Chunk-limit enforcement for typed rich blocks: surrogate-safe, wrapper- and
 // caption-preserving splitting against the live-verified Bot API limits.
 import {
-  countInputRichBlockChars,
-  countInputRichBlockMedia,
-  countInputRichBlocks,
   countRichTextChars,
+  measureInputRichBlocks,
   normalizeRichText,
   type InputRichBlock,
   type InputRichBlockListItem,
@@ -19,14 +17,6 @@ export const TELEGRAM_RICH_MEDIA_LIMIT = 20;
 
 type RichBlockBudget = { chars: number; blocks: number; media: number };
 type RichBlockLimits = { textLimit: number; blockLimit: number };
-
-function measureRichBlocks(blocks: readonly InputRichBlock[]): RichBlockBudget {
-  return {
-    chars: blocks.reduce((total, block) => total + countInputRichBlockChars(block), 0),
-    blocks: countInputRichBlocks(blocks),
-    media: blocks.reduce((total, block) => total + countInputRichBlockMedia(block), 0),
-  };
-}
 
 function addRichBlockBudget(left: RichBlockBudget, right: RichBlockBudget): RichBlockBudget {
   return {
@@ -136,7 +126,7 @@ function splitRichTextByChars(text: RichText, limit: number): RichText[] {
 
 function splitOversizedRichBlock(block: InputRichBlock, limits: RichBlockLimits): InputRichBlock[] {
   const { textLimit, blockLimit } = limits;
-  if (!exceedsRichBlockLimits(measureRichBlocks([block]), limits)) {
+  if (!exceedsRichBlockLimits(measureInputRichBlocks([block]), limits)) {
     return [block];
   }
   if (block.type === "pre") {
@@ -169,7 +159,7 @@ function splitOversizedRichBlock(block: InputRichBlock, limits: RichBlockLimits)
     if (
       block.blocks.length === 0 ||
       remainingText < 0 ||
-      (remainingText === 0 && block.blocks.some((child) => countInputRichBlockChars(child) > 0))
+      (remainingText === 0 && measureInputRichBlocks(block.blocks).chars > 0)
     ) {
       // Wrapper text cannot be divided without losing its owner; the existing
       // plain fallback handles this irreducibly oversized semantic unit.
@@ -236,7 +226,7 @@ function splitOversizedRichBlock(block: InputRichBlock, limits: RichBlockLimits)
   }
   if (block.type === "list") {
     const expandedItems = block.items.flatMap((item) => {
-      if (measureRichBlocks(item.blocks).media <= TELEGRAM_RICH_MEDIA_LIMIT) {
+      if (measureInputRichBlocks(item.blocks).media <= TELEGRAM_RICH_MEDIA_LIMIT) {
         return [item];
       }
       const itemChunks = splitTelegramRichBlocks(item.blocks, {
@@ -265,7 +255,7 @@ function splitOversizedRichBlock(block: InputRichBlock, limits: RichBlockLimits)
     let items: InputRichBlockListItem[] = [];
     let size: RichBlockBudget = { chars: 0, blocks: 1, media: 0 };
     for (const item of expandedItems) {
-      const measured = measureRichBlocks(item.blocks);
+      const measured = measureInputRichBlocks(item.blocks);
       const itemSize = { ...measured, blocks: measured.blocks + 1 };
       const nextSize = addRichBlockBudget(size, itemSize);
       if (items.length > 0 && exceedsRichBlockLimits(nextSize, limits)) {
@@ -312,7 +302,7 @@ export function splitTelegramRichBlocks(
     }
   };
   for (const block of expanded) {
-    const blockSize = measureRichBlocks([block]);
+    const blockSize = measureInputRichBlocks([block]);
     if (current.length > 0 && exceedsRichBlockLimits(addRichBlockBudget(size, blockSize), limits)) {
       flush();
     }

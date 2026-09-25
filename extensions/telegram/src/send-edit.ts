@@ -14,9 +14,13 @@ import {
   recordOutboundMessageForPromptContext,
   type TelegramOutboundPromptContextMessage,
 } from "./outbound-message-context.js";
-import { countInputRichBlockMedia } from "./rich-block-model.js";
+import { measureInputRichBlocks } from "./rich-block-model.js";
 import { TELEGRAM_RICH_MEDIA_LIMIT } from "./rich-block-split.js";
-import { buildTelegramRichMarkdownPlan } from "./rich-message.js";
+import {
+  buildTelegramRichBlocksPlan,
+  buildTelegramRichMarkdownPlan,
+  type TelegramInputRichMessage,
+} from "./rich-message.js";
 import { withTelegramPlainFallback } from "./rich-plain-fallback.js";
 import { sendLogger, withTelegramApiContext, type TelegramApiContext } from "./send-context.js";
 import type { TelegramApiCallOpts, TelegramSendOpts } from "./send-message-types.js";
@@ -36,10 +40,13 @@ type TelegramEditMessageCaptionParams = Parameters<
   TelegramApiContext["api"]["editMessageCaption"]
 >[2];
 
-type TelegramEditReplyMarkupOpts = TelegramApiCallOpts & Pick<TelegramSendOpts, "buttons">;
+type TelegramEditReplyMarkupOpts = TelegramApiCallOpts &
+  Pick<TelegramSendOpts, "buttons" | "signal" | "assertPlatformSendAuthorized">;
 
 type TelegramEditOpts = TelegramEditReplyMarkupOpts &
   Pick<TelegramSendOpts, "textMode"> & {
+    /** Native blocks prepared by the existing progress preview renderer. */
+    richMessage?: TelegramInputRichMessage;
     /** Controls whether link previews are shown in the edited message. */
     linkPreview?: boolean;
     /** Use Telegram's media-caption edit endpoint, or fall back to it when text edits target media. */
@@ -105,11 +112,8 @@ export async function editMessageTelegram(
             isTelegramServerError(err),
         },
       });
-      const requestWithEditShouldLog = <T>(
-        fn: () => Promise<T>,
-        label?: string,
-        shouldLog?: (err: unknown) => boolean,
-      ) => request(fn, label, shouldLog ? { shouldLog } : undefined);
+      const edit = <T>(fn: () => Promise<T>, label = "editMessage") =>
+        request(fn, label, { shouldLog: (err) => !isTelegramMessageNotModifiedError(err) });
 
       const textMode = opts.textMode ?? "markdown";
       const linkPreviewEnabled = opts.linkPreview ?? account.config.linkPreview ?? true;
@@ -154,16 +158,16 @@ export async function editMessageTelegram(
 
       const performTextEdit = async () => {
         const richPlan = useRichMessages
-          ? buildTelegramRichMarkdownPlan(text, {
-              tableMode,
-              skipEntityDetection: !linkPreviewEnabled,
-            })
+          ? opts.richMessage
+            ? buildTelegramRichBlocksPlan(opts.richMessage.blocks, {
+                skipEntityDetection: opts.richMessage.skip_entity_detection === true,
+              })
+            : buildTelegramRichMarkdownPlan(text, {
+                tableMode,
+                skipEntityDetection: !linkPreviewEnabled,
+              })
           : undefined;
-        const richMediaCount =
-          richPlan?.richMessage.blocks.reduce(
-            (total, block) => total + countInputRichBlockMedia(block),
-            0,
-          ) ?? 0;
+        const richMediaCount = measureInputRichBlocks(richPlan?.richMessage.blocks ?? []).media;
         const richEditExceedsMediaLimit = richMediaCount > TELEGRAM_RICH_MEDIA_LIMIT;
         if (richEditExceedsMediaLimit) {
           sendLogger.warn(
@@ -193,28 +197,30 @@ export async function editMessageTelegram(
         if (!page) {
           throw new Error("telegram editMessage failed: empty text");
         }
-        const edit = <T>(fn: () => Promise<T>, label = "editMessage") =>
-          requestWithEditShouldLog(fn, label, (err) => !isTelegramMessageNotModifiedError(err));
         const [accepted] = await deliverTelegramTextPage({
           page,
           context: "editMessage",
           warn: (message) => sendLogger.warn(message),
           fallbackLimit: Number.MAX_SAFE_INTEGER,
           sender: {
-            sendPlain: (value, _fallback, label) =>
-              value.length > TELEGRAM_TEXT_EDIT_LIMIT
-                ? Promise.reject(
-                    new Error(
-                      `telegram editMessage failed: complete plain fallback is ${value.length} characters, exceeding the ${TELEGRAM_TEXT_EDIT_LIMIT}-character edit limit`,
-                    ),
-                  )
-                : edit(
-                    () =>
-                      Object.keys(commonTextParams).length
-                        ? api.editMessageText(chatId, messageId, value, commonTextParams)
-                        : api.editMessageText(chatId, messageId, value),
-                    label,
+            sendPlain: (value, _fallback, label) => {
+              // Telegram counts Unicode code points here; entity offsets use UTF-16 separately.
+              const length = Array.from(value).length;
+              if (length > TELEGRAM_TEXT_EDIT_LIMIT) {
+                return Promise.reject(
+                  new Error(
+                    `telegram editMessage failed: complete plain fallback is ${length} characters, exceeding the ${TELEGRAM_TEXT_EDIT_LIMIT}-character edit limit`,
                   ),
+                );
+              }
+              return edit(
+                () =>
+                  Object.keys(commonTextParams).length
+                    ? api.editMessageText(chatId, messageId, value, commonTextParams)
+                    : api.editMessageText(chatId, messageId, value),
+                label,
+              );
+            },
             sendHtml: (value) =>
               edit(() =>
                 api.editMessageText(chatId, messageId, value, {
@@ -243,17 +249,12 @@ export async function editMessageTelegram(
           plainText,
           warn: (message) => sendLogger.warn(message),
           sendFormatted: () =>
-            requestWithEditShouldLog(
+            edit(
               () => api.editMessageCaption(chatId, messageId, captionEditParams),
               "editMessageCaption",
-              (err) => !isTelegramMessageNotModifiedError(err),
             ),
           sendPlain: (_plan, label) =>
-            requestWithEditShouldLog(
-              () => api.editMessageCaption(chatId, messageId, plainCaptionParams),
-              label,
-              (plainErr) => !isTelegramMessageNotModifiedError(plainErr),
-            ),
+            edit(() => api.editMessageCaption(chatId, messageId, plainCaptionParams), label),
         });
 
       let editedMessage: TelegramOutboundPromptContextMessage | true | undefined;
@@ -289,7 +290,6 @@ export async function editMessageTelegram(
           chatId,
           message: editedMessage,
           messageId: editedMessage.message_id,
-          recordGroupHistory: false,
           successfulSendThread,
           ...(botUserId !== undefined ? { botUserId } : {}),
           ...(editedMessage.message_thread_id !== undefined
