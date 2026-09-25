@@ -72,7 +72,7 @@ export function findMarkdownImageSpans(markdown: string): MarkdownImageSpan[] {
         end: sourceOffset(state.pos),
         destination: String(expectDefined(token.attrGet("src"), "Markdown image destination")),
         alt: token.content,
-        ...(title ? { title } : {}),
+        ...(title ? { title: String(title) } : {}),
       });
     },
   };

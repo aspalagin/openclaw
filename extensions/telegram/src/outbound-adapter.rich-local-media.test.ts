@@ -332,7 +332,7 @@ describe("Telegram rich local media through the outbound adapter", () => {
         (item) => resolveTelegramTestUpload({ ...fields, photo: item.media }, "photo").name,
       ),
     ).toEqual(["pixel.png", "second.png"]);
-    expect(result.receipt.platformMessageIds).toEqual(["1001", "1002"]);
+    expect(result.receipt?.platformMessageIds).toEqual(["1001", "1002"]);
   });
 
   it("preserves remaining attachment order and consumes an implicit reply only once", async () => {
@@ -369,7 +369,7 @@ describe("Telegram rich local media through the outbound adapter", () => {
       expect(fields.reply_parameters).toBeUndefined();
       expect(fields.reply_to_message_id).toBeUndefined();
     }
-    expect(result.receipt.platformMessageIds).toEqual(["1", "2", "3"]);
+    expect(result.receipt?.platformMessageIds).toEqual(["1", "2", "3"]);
   });
 
   it.each(["voice", "video note", "forced document"] as const)(
@@ -438,7 +438,7 @@ describe("Telegram rich local media through the outbound adapter", () => {
       expect(Buffer.from(await resolveTelegramTestUpload(fallback, key).arrayBuffer())).toEqual(
         await fs.readFile(source),
       );
-      expect(result.receipt.platformMessageIds).toEqual(["2", "3"]);
+      expect(result.receipt?.platformMessageIds).toEqual(["2", "3"]);
     },
   );
 
