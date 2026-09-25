@@ -25,6 +25,7 @@ import {
   resolveRunModelFallbacksOverride,
   resolveSubagentModelFallbacksOverride,
   resolveAgentWorkspaceDir,
+  resolveAgentRunCwd,
   resolveAgentWorkspaceProvisioning,
   resolveAutoFallbackPrimaryProbe,
   resolveAgentIdByWorkspacePath,
@@ -1040,7 +1041,7 @@ describe("resolveAgentConfig", () => {
   });
 
   it("should return agent-specific sandbox config", () => {
-    const cfg = {
+    const cfg: OpenClawConfig = {
       agents: {
         list: [
           {
@@ -1049,19 +1050,17 @@ describe("resolveAgentConfig", () => {
             sandbox: {
               mode: "all",
               scope: "agent",
-              perSession: false,
               workspaceAccess: "ro",
               workspaceRoot: "~/sandboxes",
             },
           },
         ],
       },
-    } as unknown as OpenClawConfig;
+    };
     const result = resolveAgentConfig(cfg, "work");
     expect(result?.sandbox).toEqual({
       mode: "all",
       scope: "agent",
-      perSession: false,
       workspaceAccess: "ro",
       workspaceRoot: "~/sandboxes",
     });
@@ -1214,6 +1213,25 @@ describe("resolveAgentConfig", () => {
       resolveAgentWorkspaceDir(cfg, "main"),
     );
     expect(workspace).toBe(path.resolve(stateDir, "workspace-main"));
+  });
+});
+
+describe("resolveAgentRunCwd", () => {
+  it.each([
+    { cwd: " ~/projects/repo ", expected: path.resolve("/srv/openclaw-home/projects/repo") },
+    { cwd: "./projects/repo", expected: path.resolve("projects/repo") },
+    { cwd: " ", expected: path.resolve("/default-repo") },
+  ])("resolves configured path $cwd without relocating workspace", ({ cwd, expected }) => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: { cwd: "/default-repo" },
+        list: [{ id: "work", cwd, workspace: "/agent-workspace" }],
+      },
+    };
+    withEnv({ OPENCLAW_HOME: "/srv/openclaw-home" }, () => {
+      expect(resolveAgentRunCwd(cfg, "WORK")).toBe(expected);
+      expect(resolveAgentWorkspaceDir(cfg, "work")).toBe(path.resolve("/agent-workspace"));
+    });
   });
 });
 

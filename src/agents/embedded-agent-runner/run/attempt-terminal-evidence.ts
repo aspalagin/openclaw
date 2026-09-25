@@ -1,5 +1,4 @@
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
-/** Records attempt replay safety and terminal side-effect evidence. */
 import {
   hasAcceptedSessionSpawn,
   hasCompletionMessageSessionSpawn,
@@ -7,6 +6,18 @@ import {
 import { hasMessagingToolDeliveryEvidence } from "../delivery-evidence.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
+
+/** Reads this attempt's response without reviving an older transcript turn. */
+export function resolveCurrentAttemptAssistant(
+  attempt: Pick<
+    EmbeddedRunAttemptResult,
+    "currentAttemptAssistant" | "currentAttemptCompletedAssistant"
+  >,
+) {
+  // The completed event survives transcript projection and is cleared before a
+  // compaction retry. Historical lastAssistant is not evidence of a new response.
+  return attempt.currentAttemptAssistant ?? attempt.currentAttemptCompletedAssistant;
+}
 
 type ReplayMetadataAttempt = Pick<
   EmbeddedRunAttemptResult,
@@ -77,12 +88,8 @@ type TerminalAttemptState = Pick<
   };
 
 export function hasAttemptTerminalState(attempt: TerminalAttemptState): boolean {
-  return Boolean(attempt.lastToolError || hasNonToolTerminalState(attempt));
-}
-
-/** Projects terminal evidence whose ownership does not depend on a tool failure. */
-export function hasNonToolTerminalState(attempt: TerminalAttemptState): boolean {
   return Boolean(
+    attempt.lastToolError ||
     attempt.clientToolCalls ||
     attempt.yieldDetected ||
     attempt.didSendDeterministicApprovalPrompt ||

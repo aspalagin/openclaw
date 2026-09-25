@@ -42,6 +42,7 @@ type MemoryWikiLintIssue = {
     | "missing-source-ids"
     | "missing-import-provenance"
     | "broken-wikilink"
+    | "unchecked-wikilink"
     | "contradiction-present"
     | "claim-conflict"
     | "open-question"
@@ -61,10 +62,6 @@ type LintMemoryWikiResult = {
   issuesByCategory: Record<MemoryWikiLintIssue["category"], MemoryWikiLintIssue[]>;
   reportPath: string;
 };
-
-function toExpectedPageType(page: WikiPageSummary): string {
-  return page.kind;
-}
 
 function isUnmanagedRawSourcePage(
   page: WikiPageSummary,
@@ -292,9 +289,14 @@ async function collectBrokenLinkIssues(
           let pending = directPathTargets.get(requestedPath);
           if (!pending) {
             if (directPathTargets.size >= MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS) {
-              throw new Error(
-                `Memory Wiki lint fallback path check budget exceeded (${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique targets)`,
-              );
+              issues.push({
+                severity: "warning",
+                category: "links",
+                code: "unchecked-wikilink",
+                path: page.relativePath,
+                message: `Wikilink target \`${linkTarget}\` was not checked: the limit of ${MEMORY_WIKI_LINT_MAX_FALLBACK_PATH_CHECKS} unique file targets was reached.`,
+              });
+              continue;
             }
             pending = hasVaultMarkdownPathTarget(vaultRoot, requestedPath, signal);
             directPathTargets.set(requestedPath, pending);
@@ -360,13 +362,13 @@ async function collectPageIssues(
           message: "Missing `pageType` frontmatter.",
         });
       }
-    } else if (page.pageType !== toExpectedPageType(page)) {
+    } else if (page.pageType !== page.kind) {
       issues.push({
         severity: "error",
         category: "structure",
         code: "page-type-mismatch",
         path: page.relativePath,
-        message: `Expected pageType \`${toExpectedPageType(page)}\`, found \`${page.pageType}\`.`,
+        message: `Expected pageType \`${page.kind}\`, found \`${page.pageType}\`.`,
       });
     }
 
@@ -547,38 +549,19 @@ function buildLintReportBody(issues: MemoryWikiLintIssue[]): string {
   const byCategory = buildIssuesByCategory(issues);
   const lines = [`- Errors: ${errors.length}`, `- Warnings: ${warnings.length}`];
 
-  if (errors.length > 0) {
-    lines.push("", "### Errors");
-    for (const issue of errors) {
-      lines.push(`- \`${issue.path}\`: ${issue.message}`);
-    }
-  }
-
-  if (warnings.length > 0) {
-    lines.push("", "### Warnings");
-    for (const issue of warnings) {
-      lines.push(`- \`${issue.path}\`: ${issue.message}`);
-    }
-  }
-
-  if (byCategory.contradictions.length > 0) {
-    lines.push("", "### Contradictions");
-    for (const issue of byCategory.contradictions) {
-      lines.push(`- \`${issue.path}\`: ${issue.message}`);
-    }
-  }
-
-  if (byCategory["open-questions"].length > 0) {
-    lines.push("", "### Open Questions");
-    for (const issue of byCategory["open-questions"]) {
-      lines.push(`- \`${issue.path}\`: ${issue.message}`);
-    }
-  }
-
-  if (byCategory.provenance.length > 0 || byCategory.quality.length > 0) {
-    lines.push("", "### Quality Follow-Up");
-    for (const issue of [...byCategory.provenance, ...byCategory.quality]) {
-      lines.push(`- \`${issue.path}\`: ${issue.message}`);
+  const sections: Array<[string, MemoryWikiLintIssue[]]> = [
+    ["Errors", errors],
+    ["Warnings", warnings],
+    ["Contradictions", byCategory.contradictions],
+    ["Open Questions", byCategory["open-questions"]],
+    ["Quality Follow-Up", [...byCategory.provenance, ...byCategory.quality]],
+  ];
+  for (const [heading, sectionIssues] of sections) {
+    if (sectionIssues.length > 0) {
+      lines.push("", `### ${heading}`);
+      for (const issue of sectionIssues) {
+        lines.push(`- \`${issue.path}\`: ${issue.message}`);
+      }
     }
   }
 
@@ -640,15 +623,13 @@ export async function lintMemoryWikiVault(
     Object.values(sourceSyncState.entries).map((entry) => entry.pagePath.split(path.sep).join("/")),
   );
   const issues = [
-    ...compileResult.frontmatterErrors.map(
-      (error): MemoryWikiLintIssue => ({
-        severity: "error",
-        category: "structure",
-        code: "invalid-frontmatter",
-        path: error.relativePath,
-        message: `Frontmatter failed to parse: ${error.message}`,
-      }),
-    ),
+    ...compileResult.frontmatterErrors.map((error): MemoryWikiLintIssue => ({
+      severity: "error",
+      category: "structure",
+      code: "invalid-frontmatter",
+      path: error.relativePath,
+      message: `Frontmatter failed to parse: ${error.message}`,
+    })),
     ...(await collectPageIssues(
       config.vault.path,
       compileResult.pages,

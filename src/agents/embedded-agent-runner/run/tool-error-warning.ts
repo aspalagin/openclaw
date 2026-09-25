@@ -24,6 +24,16 @@ function formatToolErrorWarningText(params: {
 }): string {
   const failureVerb = params.lastToolError.executionStarted === false ? "blocked" : "failed";
   const terminalDiagnostic = params.lastToolError.terminalDiagnostic;
+  if (terminalDiagnostic?.kind === "timeout") {
+    const toolLabel = resolveToolDisplay({ name: params.lastToolError.toolName }).label;
+    const count = terminalDiagnostic.partialResults;
+    const partialSuffix = count
+      ? `; ${count} partial ${count === 1 ? "result is" : "results are"} available`
+      : "";
+    const errorSuffix =
+      params.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : ".";
+    return `⚠️ ${toolLabel} timed out after ${terminalDiagnostic.timeoutMs / 1000}s${partialSuffix}${errorSuffix}`;
+  }
   if (terminalDiagnostic?.kind === "process") {
     const toolLabel = formatWarningToolLabel(
       "process",
@@ -40,8 +50,7 @@ function formatToolErrorWarningText(params: {
             : "timed out";
     const errorSuffix =
       params.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : "";
-    const recoveryHint = params.includeDetails ? "" : ". Use /verbose full for complete output";
-    return `⚠️ ${toolLabel} failed (${reason})${errorSuffix}${recoveryHint}.`;
+    return `⚠️ ${toolLabel} failed (${reason})${errorSuffix}.`;
   }
 
   const includeError =
@@ -285,28 +294,19 @@ function formatConciseExecExitSuffix(error: string | undefined): string {
 function maybeWrapInlineCode(value: string, markdown: boolean): string {
   return markdown ? formatInlineCodeSpan(value) : value;
 }
-/** Warn only when a tool failure would otherwise leave the user with no reply. */
+/** Always warn when a tool failure would otherwise leave the user with no reply. */
 export function buildFailureWarning(params: {
   lastToolError: ToolErrorSummary;
   hasUserFacingReply: boolean;
-  suppressToolErrors: boolean;
-  suppressToolErrorWarnings?: boolean;
   verboseLevel?: VerboseLevel;
   useMarkdown: boolean;
-}): { text: string; nonTerminalToolErrorWarning: boolean } | undefined {
-  if (
-    params.hasUserFacingReply ||
-    params.suppressToolErrors ||
-    params.suppressToolErrorWarnings === true
-  ) {
+}): string | undefined {
+  if (params.hasUserFacingReply) {
     return undefined;
   }
-  return {
-    text: formatToolErrorWarningText({
-      lastToolError: params.lastToolError,
-      includeDetails: params.verboseLevel === "full",
-      useMarkdown: params.useMarkdown,
-    }),
-    nonTerminalToolErrorWarning: params.lastToolError.middlewareError === true,
-  };
+  return formatToolErrorWarningText({
+    lastToolError: params.lastToolError,
+    includeDetails: params.verboseLevel === "full",
+    useMarkdown: params.useMarkdown,
+  });
 }

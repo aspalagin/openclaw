@@ -69,18 +69,35 @@ describe("lintMemoryWikiVault direct path safety", () => {
     });
   });
 
-  it("fails clearly when unique fallback path checks exhaust their budget", async () => {
+  it("publishes partial findings and identifies unchecked links when the path budget is exhausted", async () => {
     const { rootDir, config } = await createVault({
       prefix: "memory-wiki-lint-vault-wide-budget-",
       config: {
         vault: { renderMode: "obsidian" },
       },
     });
-    await fs.mkdir(path.join(rootDir, "sources"), { recursive: true });
-    const links = Array.from(
-      { length: FALLBACK_PATH_CHECK_BUDGET + 1 },
-      (_, index) => `[[archive/missing-${index}]]`,
+    await Promise.all(
+      ["sources", "archive"].map((dir) => fs.mkdir(path.join(rootDir, dir), { recursive: true })),
     );
+    await Promise.all(
+      ["present", "unchecked-existing"].map((name) =>
+        fs.writeFile(path.join(rootDir, "archive", `${name}.md`), `# ${name}\n`, "utf8"),
+      ),
+    );
+    const missingTargets = Array.from(
+      { length: FALLBACK_PATH_CHECK_BUDGET - 1 },
+      (_, index) => `archive/missing-${index}`,
+    );
+    const uncheckedTargets = ["archive/unchecked-existing", "archive/unchecked-missing"];
+    const targets = [
+      "archive/present",
+      ...missingTargets,
+      ...uncheckedTargets,
+      "archive/present.md#cached",
+      "archive/missing-0.md#cached",
+      ".git/private",
+      "sources/references",
+    ];
     await fs.writeFile(
       path.join(rootDir, "sources", "references.md"),
       renderWikiMarkdown({
@@ -88,18 +105,61 @@ describe("lintMemoryWikiVault direct path safety", () => {
           pageType: "source",
           id: "source.references",
           title: "References",
+          confidence: 0.2,
         },
-        body: ["# References", "", ...links].join("\n"),
+        body: ["# References", "", ...targets.map((target) => `[[${target}]]`)].join("\n"),
       }),
       "utf8",
     );
-
-    await expect(lintMemoryWikiVault(config)).rejects.toThrow(
-      `Memory Wiki lint fallback path check budget exceeded (${FALLBACK_PATH_CHECK_BUDGET} unique targets)`,
-    );
-    await expect(fs.stat(path.join(rootDir, "reports", "lint.md"))).rejects.toMatchObject({
-      code: "ENOENT",
+    const rootMock = vi.mocked(createFsSafeRoot);
+    const createRoot = rootMock.getMockImplementation();
+    if (!createRoot) {
+      throw new Error("file-access root mock has no implementation");
+    }
+    let openCalls = 0;
+    rootMock.mockImplementationOnce(async (requestedRoot, defaults) => {
+      const safeRoot = await createRoot(requestedRoot, defaults);
+      const open = safeRoot.open.bind(safeRoot);
+      vi.spyOn(safeRoot, "open").mockImplementation(async (...args) => {
+        openCalls += 1;
+        return await open(...args);
+      });
+      return safeRoot;
     });
+
+    const result = await lintMemoryWikiVault(config);
+
+    expect(openCalls).toBe(FALLBACK_PATH_CHECK_BUDGET);
+    const unchecked = result.issuesByCategory.links.filter(
+      (issue) => issue.code === "unchecked-wikilink",
+    );
+    expect(unchecked).toEqual(
+      uncheckedTargets.map((target) => ({
+        severity: "warning",
+        category: "links",
+        code: "unchecked-wikilink",
+        path: "sources/references.md",
+        message: `Wikilink target \`${target}\` was not checked: the limit of 512 unique file targets was reached.`,
+      })),
+    );
+    expect(
+      result.issuesByCategory.links
+        .filter((issue) => issue.code === "broken-wikilink")
+        .map((issue) => issue.message),
+    ).toEqual(
+      [...missingTargets, "archive/missing-0.md#cached", ".git/private"].map(
+        (target) => `Broken wikilink target \`${target}\`.`,
+      ),
+    );
+    expect(result.issuesByCategory.quality).toContainEqual(
+      expect.objectContaining({ code: "low-confidence", path: "sources/references.md" }),
+    );
+    const report = await fs.readFile(result.reportPath, "utf8");
+    expect(report).toContain("Broken wikilink target `archive/missing-0`.");
+    expect(report).toContain("Page confidence is low (0.20).");
+    for (const issue of unchecked) {
+      expect(report).toContain(issue.message);
+    }
   });
 
   it("does not spend the fallback path budget on rejected targets", async () => {
