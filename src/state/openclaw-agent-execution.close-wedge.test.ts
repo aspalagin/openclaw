@@ -117,7 +117,7 @@ const source: AgentDatabaseRequestExecutionSource = {
         if (!grant()) {
           throw new Error("Close wedge fixture lost admission");
         }
-      }),
+      }, binding.attachment),
     });
   },
 };
