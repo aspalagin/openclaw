@@ -10,7 +10,8 @@ import { captureOpenClawAgentDatabaseExecution } from "./openclaw-agent-executio
 import { closeOpenClawStateDatabaseAsync } from "./openclaw-state-db.js";
 
 /**
- * Repro for the "Agent database execution admission is closed" wedge.
+ * Regression coverage for the "Agent database execution admission is closed" wedge
+ * (openclaw/openclaw#159438).
  *
  * Production sequence (2026.9.6, observed 2026-09-27 01:00 UTC):
  *   1. an agent-DB operation fails while its native store becomes unavailable
@@ -18,14 +19,13 @@ import { closeOpenClawStateDatabaseAsync } from "./openclaw-state-db.js";
  *   2. `owner.close()` sets `retired = true` first, then `closeNative()` rejects,
  *      so `finishRetirement()` never runs and the owner stays in `executions`;
  *   3. the caller sees `AggregateError("Agent operation and cleanup failed")`;
- *   4. every later capture for the same agent path finds the retired owner in
- *      `executions`, and `borrow()` → `assertCurrent()` throws
- *      "Agent database execution admission is closed" until the process restarts.
+ *   4. before the fix, every later capture for the same agent path found the retired
+ *      owner in `executions`, and `borrow()` → `assertCurrent()` threw
+ *      "Agent database execution admission is closed" until the process restarted.
  *
- * The fault below kills the SQLite worker thread while it handles a command that
- * carries a marker, which is the cheapest way to make the native store unavailable
- * mid-operation and to make the native close fail in the same way a transient
- * I/O error did in production.
+ * The faults below (worker exit on a marked command, refused lease release) make the
+ * native store unavailable mid-operation and make the native close fail the same way
+ * a transient I/O error did in production. Only an explicit `revoke()` stays terminal.
  */
 const fault = vi.hoisted(() => ({
   marker: "close-wedge-kill-marker",
@@ -166,32 +166,43 @@ it("re-admits an agent after a failed operation whose owner close also failed", 
   await retry.release();
 });
 
-it("keeps the wedge scoped to the failed agent path and clears it only on full drain", async () => {
+it("surfaces the native cleanup cause while the close still fails, then recovers once it clears", async () => {
   const env = { OPENCLAW_STATE_DIR: fs.realpathSync(tempDirs.make("agent-close-wedge-scope-")) };
   const first = captureOpenClawAgentDatabaseExecution({ agentId: "first", env });
   await first.prepare(source);
-  const failure = await failFirstOperation(first);
+
+  // The fault stays enabled through the whole retry below.
+  Atomics.store(new Int32Array(fault.enabled), 0, 1);
+  const failure: unknown = await first
+    .runExisting(source, (scope) =>
+      scope.execute({ type: "session.entry.read", input: { sessionKey: fault.marker } }),
+    )
+    .catch((error: unknown) => error);
   expect(failure).toBeInstanceOf(Error);
+  expect(formatErrorMessageWithCode(failure)).toContain("Agent operation and cleanup failed");
   await first.release().catch(() => undefined);
 
-  // Another agent on the same state directory keeps working (the wedge is per agent path).
+  // Another agent on the same state directory is not affected.
   const second = captureOpenClawAgentDatabaseExecution({ agentId: "second", env });
   await second.prepare(source);
   expect(await second.runExisting(source, async () => "second usable")).toBe("second usable");
   await second.release();
 
-  // Documenting the current (buggy) behaviour: the failed agent stays refused ...
-  const refused: unknown = await Promise.resolve()
-    .then(() => captureOpenClawAgentDatabaseExecution({ agentId: "first", env }).prepare(source))
-    .catch((error: unknown) => error);
-  console.log(`[close-wedge] scoped re-admission: ${formatErrorMessageWithCode(refused)}`);
+  // The failed agent is re-admitted; its retained cleanup is retried first and still fails,
+  // so the caller sees the native cause instead of a generic admission refusal.
+  const retry = captureOpenClawAgentDatabaseExecution({ agentId: "first", env });
+  const stillFailing: unknown = await retry.prepare(source).catch((error: unknown) => error);
+  const stillFailingText = formatErrorMessageWithCode(stillFailing);
+  console.log(`[close-wedge] retry while cleanup still fails: ${stillFailingText}`);
+  expect(stillFailing).toBeInstanceOf(Error);
+  expect(stillFailingText).toContain("disk I/O error");
+  expect(stillFailingText).not.toContain("admission is closed");
+  await retry.release().catch(() => undefined);
 
-  // ... and only a full drain (what a gateway restart does) lets it open again.
-  await closeOpenClawAgentDatabasesAsync().catch((error: unknown) => {
-    console.log(`[close-wedge] drain failure: ${formatErrorMessageWithCode(error)}`);
-  });
-  const afterDrain = captureOpenClawAgentDatabaseExecution({ agentId: "first", env });
-  await afterDrain.prepare(source);
-  expect(await afterDrain.runExisting(source, async () => "after drain")).toBe("after drain");
-  await afterDrain.release();
+  // Once the cause is gone the same agent recovers without a process restart.
+  Atomics.store(new Int32Array(fault.enabled), 0, 0);
+  const recovered = captureOpenClawAgentDatabaseExecution({ agentId: "first", env });
+  await recovered.prepare(source);
+  expect(await recovered.runExisting(source, async () => "recovered")).toBe("recovered");
+  await recovered.release();
 });
