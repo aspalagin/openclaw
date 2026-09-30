@@ -442,6 +442,32 @@ describe("Telegram rich local media through the outbound adapter", () => {
     },
   );
 
+  it("resends every repeated local attachment after rich rejection", async () => {
+    rejections.push("Bad Request: RICH_MESSAGE_MEDIA_INVALID");
+    const result = await telegramOutbound.sendPayload!({
+      cfg: richConfig(),
+      to: "123",
+      text: "",
+      payload: { text: "Report", mediaUrls: [fixture.photoPath, fixture.photoPath] },
+      mediaLocalRoots: [fixture.mediaDir],
+    });
+    expect(requests.map(({ method }) => method)).toEqual([
+      "sendRichMessage",
+      "sendMessage",
+      "sendMediaGroup",
+    ]);
+    const rejected = richMessage(requests[0]!.fields).blocks;
+    expect(rejected.filter((block) => block.type === "photo")).toHaveLength(2);
+    const fields = requests[2]!.fields;
+    const media = JSON.parse(String(fields.media)) as Array<{ type: string; media: string }>;
+    expect(media.map((item) => item.type)).toEqual(["photo", "photo"]);
+    for (const item of media) {
+      const upload = resolveTelegramTestUpload({ ...fields, photo: item.media }, "photo");
+      expect(Buffer.from(await upload.arrayBuffer())).toEqual(photoBytes);
+    }
+    expect(result.receipt?.platformMessageIds).toEqual(["2", "1001", "1002"]);
+  });
+
   it("retains the accepted plain-text receipt when local fallback upload fails", async () => {
     rejections.push("Bad Request: RICH_MESSAGE_MEDIA_INVALID", "", "Bad Request: upload rejected");
     const observed = await telegramOutbound.sendText!({

@@ -104,6 +104,38 @@ function buildFigure(
   return `<figure><${tag} src="${source}"${alt}/>${caption}</figure>`;
 }
 
+type RichLocalMediaLoadParams = {
+  maxBytes?: number;
+  mediaAccess?: OutboundMediaAccess;
+  mediaLocalRoots?: readonly string[];
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
+};
+
+async function loadRichLocalMediaFile(source: string, params: RichLocalMediaLoadParams) {
+  const loaded = await loadWebMedia(source, buildOutboundMediaLoadOptions(params));
+  const kind = kindFromMime(loaded.contentType ?? undefined);
+  const isGif = isGifMedia({ contentType: loaded.contentType, fileName: loaded.fileName });
+  const type: RichMediaType | undefined =
+    kind === "image" && !isGif && (await isRichPhoto(loaded))
+      ? "photo"
+      : kind === "video" && !isGif
+        ? "video"
+        : kind === "audio"
+          ? isVoiceNoteMedia(loaded.fileName ?? source)
+            ? "voice_note"
+            : "audio"
+          : undefined;
+  if (!type) {
+    return undefined;
+  }
+  const fileName = richLocalMediaFilename({
+    fileName: loaded.fileName,
+    contentType: loaded.contentType,
+    type,
+  });
+  return { type, fileName, buffer: loaded.buffer };
+}
+
 export async function resolveTelegramRichLocalMedia(params: {
   text: string;
   tableMode?: MarkdownTableMode;
@@ -119,56 +151,34 @@ export async function resolveTelegramRichLocalMedia(params: {
   unconsumedMediaUrls: string[];
 }> {
   const media: TelegramRichLocalMedia[] = [];
-  const cache = new Map<string, Promise<TelegramRichLocalMedia | undefined>>();
-  let nextId = 0;
+  const loadParams: RichLocalMediaLoadParams = {
+    maxBytes: params.maxBytes,
+    mediaAccess: params.mediaAccess,
+    mediaLocalRoots: params.mediaLocalRoots,
+    mediaReadFile: params.mediaReadFile,
+  };
+  const loads = new Map<string, ReturnType<typeof loadRichLocalMediaFile>>();
+  // Each file is read once, but every embedded occurrence gets its own entry
+  // and upload, so a rejected rich page resends each occurrence it displayed.
   const resolve = async (source: string) => {
     const key = source.trim();
-    const cached = cache.get(key);
-    if (cached) {
-      return await cached;
+    let pending = loads.get(key);
+    if (!pending) {
+      pending = loadRichLocalMediaFile(key, loadParams);
+      loads.set(key, pending);
     }
-    const pending = (async () => {
-      const loaded = await loadWebMedia(
-        key,
-        buildOutboundMediaLoadOptions({
-          maxBytes: params.maxBytes,
-          mediaAccess: params.mediaAccess,
-          mediaLocalRoots: params.mediaLocalRoots,
-          mediaReadFile: params.mediaReadFile,
-        }),
-      );
-      const kind = kindFromMime(loaded.contentType ?? undefined);
-      const isGif = isGifMedia({ contentType: loaded.contentType, fileName: loaded.fileName });
-      const type =
-        kind === "image" && !isGif && (await isRichPhoto(loaded))
-          ? "photo"
-          : kind === "video" && !isGif
-            ? "video"
-            : kind === "audio"
-              ? isVoiceNoteMedia(loaded.fileName ?? key)
-                ? "voice_note"
-                : "audio"
-              : undefined;
-      if (!type) {
-        return undefined;
-      }
-      nextId += 1;
-      const fileName = richLocalMediaFilename({
-        fileName: loaded.fileName,
-        contentType: loaded.contentType,
-        type,
-      });
-      const entry: TelegramRichLocalMedia = {
-        id: `media${nextId}`,
-        source: key,
-        fileName,
-        media: { type, media: new InputFile(loaded.buffer, fileName) },
-      };
-      media.push(entry);
-      return entry;
-    })();
-    cache.set(key, pending);
-    return await pending;
+    const loaded = await pending;
+    if (!loaded) {
+      return undefined;
+    }
+    const entry: TelegramRichLocalMedia = {
+      id: `media${media.length + 1}`,
+      source: key,
+      fileName: loaded.fileName,
+      media: { type: loaded.type, media: new InputFile(loaded.buffer, loaded.fileName) },
+    };
+    media.push(entry);
+    return entry;
   };
 
   // Discovery is text-only. The canonical rich parser decides which candidates
@@ -264,8 +274,8 @@ export async function resolveTelegramRichLocalMedia(params: {
   }
   markdown += params.text.slice(cursor);
 
-  const appended: Array<{ source: string; reference: string; figure: string }> = [];
-  for (const source of params.mediaUrls ?? []) {
+  const appended: Array<{ index: number; reference: string; figure: string }> = [];
+  for (const [index, source] of (params.mediaUrls ?? []).entries()) {
     if (!isTelegramRichLocalMediaSource(source)) {
       continue;
     }
@@ -274,7 +284,7 @@ export async function resolveTelegramRichLocalMedia(params: {
       continue;
     }
     const reference = telegramRichMediaReference(resolved);
-    appended.push({ source, reference, figure: buildFigure(reference, resolved.media.type) });
+    appended.push({ index, reference, figure: buildFigure(reference, resolved.media.type) });
   }
   const withFigures = (figures: typeof appended) =>
     figures.length
@@ -291,12 +301,12 @@ export async function resolveTelegramRichLocalMedia(params: {
   // An unclosed code fence or HTML container can swallow appended figures.
   // Keep those files on ordinary delivery and remove their internal references.
   const acceptedFigures = appended.filter((entry) => finalSources?.has(entry.reference));
-  const consumedSources = new Set(acceptedFigures.map((entry) => entry.source));
+  const consumedIndexes = new Set(acceptedFigures.map((entry) => entry.index));
   return {
     text: withFigures(acceptedFigures),
     media: finalSources
       ? media.filter((entry) => finalSources.has(telegramRichMediaReference(entry)))
       : media,
-    unconsumedMediaUrls: (params.mediaUrls ?? []).filter((source) => !consumedSources.has(source)),
+    unconsumedMediaUrls: (params.mediaUrls ?? []).filter((_, index) => !consumedIndexes.has(index)),
   };
 }
