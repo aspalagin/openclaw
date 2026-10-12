@@ -134,7 +134,7 @@ Rich Telegram surfaces: formatted messages, inline keyboards, agent message acti
 
     Mini App buttons only work in private chats between a user and the bot.
 
-    Callback action values not claimed by a registered plugin interactive handler are passed to the agent as text: `callback_data: <value>`.
+    Buttons the agent sends through the `message` tool with `action: { type: "callback" }` are agent-owned: a tap reaches the agent as text, `callback_data: <value>`, and the value is never treated as a command, even when it starts with `/`. Typed callback controls sent by plugins route to the plugin's registered interactive handler; when no handler owns them (the plugin was disabled or removed), the tap replies "This action is no longer available." Legacy `{ label, value }` buttons keep their raw callback behavior.
 
     With durable ingress, OpenClaw sends the callback acknowledgement after storing the update, without waiting for earlier handlers in that chat's lane. Telegram clears its loading indicator when the acknowledgement succeeds; the button's action still follows normal authorization and ordered processing.
 

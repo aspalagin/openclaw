@@ -1,4 +1,5 @@
-// A real grammY bot and loopback Bot API prove unclaimed typed callbacks reach the agent as text.
+// A real grammY bot and loopback Bot API prove agent-authored typed buttons reach the agent
+// as text while plugin-owned opaque controls keep their plugin or terminal behavior.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Bot } from "grammy";
@@ -10,14 +11,31 @@ import { createTelegramCallbackRouter } from "./bot-handlers.callback-router.js"
 import type { TelegramHandlerAuthorization } from "./bot-handlers.inbound-authorization.js";
 import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
-import { buildTelegramOpaqueCallbackData } from "./native-command-callback-data.js";
 import { resetTelegramClientOptionsCacheForTests } from "./send.js";
+
+const pluginDispatch = vi.hoisted(() =>
+  vi.fn(async ({ data }: { data: string }) => ({ handled: data.startsWith("agentchoice:") })),
+);
+vi.mock("./interactive-dispatch.js", () => ({
+  dispatchTelegramPluginInteractiveHandler: pluginDispatch,
+}));
 
 const TOKEN = "123456:loopback-token";
 const CHAT_ID = 1234;
+const CALLBACK_ID = "agent-choice-tap";
 const UNAVAILABLE_TEXT = "This action is no longer available.";
+// Independent FNV-1a/base36 checksums; a builder regression must not re-derive them.
+const AGENT_CHOICE = "tgac1:1ffnt:btntest_typed";
+const AGENT_CHOICE_SLASH = "tgac1:1ihat:/approve plugin:1 allow";
+// "agentchoice" is the namespace the mocked plugin handler claims; "code-agent" has no owner.
+const AGENT_CHOICE_PLUGIN_NAMESPACE = "tgac1:ef91p:agentchoice:approve-123";
+const PLUGIN_OPAQUE_CLAIMED = "tgcb1:ef91p:agentchoice:approve-123";
+const PLUGIN_OPAQUE_RETIRED = "tgcb1:yvak0:code-agent:approve-123";
 
 type TelegramApiRequest = { method: string; payload: Record<string, unknown> };
+type ProcessMessageParams = Parameters<
+  TelegramCallbackMessageRuntime["processMessageWithReplyChain"]
+>[0];
 
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -81,11 +99,13 @@ async function routeCallback(params: {
         },
       },
     };
-    const processMessageWithReplyChain = vi.fn(async () => ({ kind: "completed" as const }));
+    const processMessageWithReplyChain = vi.fn(async (_params: ProcessMessageParams) => ({
+      kind: "completed" as const,
+    }));
     const message = {
       processMessageWithReplyChain,
       resolveTelegramSessionState: async () => {
-        throw new Error("typed callback text fallback must not resolve session state");
+        throw new Error("agent choice delivery must not resolve session state");
       },
     } as unknown as TelegramCallbackMessageRuntime;
     const authorization = {
@@ -116,7 +136,7 @@ async function routeCallback(params: {
     await bot.handleUpdate({
       update_id: 1,
       callback_query: {
-        id: "typed-callback",
+        id: CALLBACK_ID,
         chat_instance: "loopback-chat",
         data: params.data,
         from: { id: 9, is_bot: false, first_name: "Operator", username: "operator" },
@@ -131,18 +151,35 @@ async function routeCallback(params: {
   }
 }
 
-describe("Telegram typed callback text fallback", () => {
+function expectTerminalized(
+  outcome: Awaited<ReturnType<typeof routeCallback>>,
+  expectedPluginDispatchCalls = 0,
+) {
+  expect(outcome.requests.map(({ method }) => method)).toEqual([
+    "answerCallbackQuery",
+    "editMessageReplyMarkup",
+    "sendMessage",
+  ]);
+  expect(outcome.requests[2]?.payload).toMatchObject({ chat_id: CHAT_ID, text: UNAVAILABLE_TEXT });
+  expect(outcome.processMessageWithReplyChain).not.toHaveBeenCalled();
+  expect(pluginDispatch).toHaveBeenCalledTimes(expectedPluginDispatchCalls);
+}
+
+describe("Telegram agent choice callbacks", () => {
   afterEach(() => {
+    pluginDispatch.mockClear();
     resetTelegramClientOptionsCacheForTests();
   });
 
   it.each([
-    { name: "a plain value", value: "btntest_typed" },
-    { name: "a slash-prefixed value as data, not a command", value: "/approve plugin:1 allow" },
-  ])("delivers an unclaimed typed callback with $name to the agent", async ({ value }) => {
-    const { requests, processMessageWithReplyChain } = await routeCallback({
-      data: buildTelegramOpaqueCallbackData(value),
-    });
+    { name: "a plain value", data: AGENT_CHOICE, value: "btntest_typed" },
+    {
+      name: "a slash-prefixed value as data, not a command",
+      data: AGENT_CHOICE_SLASH,
+      value: "/approve plugin:1 allow",
+    },
+  ])("delivers an agent choice with $name to the agent as text", async ({ data, value }) => {
+    const { requests, processMessageWithReplyChain } = await routeCallback({ data });
 
     expect(requests.map(({ method }) => method)).toEqual([
       "answerCallbackQuery",
@@ -153,22 +190,20 @@ describe("Telegram typed callback text fallback", () => {
       reply_markup: { inline_keyboard: [] },
     });
     expect(processMessageWithReplyChain).toHaveBeenCalledTimes(1);
-    const call = processMessageWithReplyChain.mock.calls[0]?.[0] as {
-      msg: { text?: string; chat: { id: number } };
-      options: Record<string, unknown>;
-    };
-    expect(call.msg.text).toBe(`callback_data: ${value}`);
-    expect(call.msg.chat.id).toBe(CHAT_ID);
-    expect(call.options).toMatchObject({
+    const call = processMessageWithReplyChain.mock.calls[0]?.[0];
+    expect(call?.msg.text).toBe(`callback_data: ${value}`);
+    expect(call?.msg.chat.id).toBe(CHAT_ID);
+    expect(call?.options).toMatchObject({
       forceWasMentioned: true,
-      messageIdOverride: "typed-callback",
+      messageIdOverride: CALLBACK_ID,
     });
-    expect(call.options.commandSource).toBeUndefined();
+    expect(call?.options?.commandSource).toBeUndefined();
+    expect(pluginDispatch).not.toHaveBeenCalled();
   });
 
   it("skips button cleanup when the callback message has no keyboard left", async () => {
     const { requests, processMessageWithReplyChain } = await routeCallback({
-      data: buildTelegramOpaqueCallbackData("btntest_typed"),
+      data: AGENT_CHOICE,
       withKeyboard: false,
     });
 
@@ -176,32 +211,32 @@ describe("Telegram typed callback text fallback", () => {
     expect(processMessageWithReplyChain).toHaveBeenCalledTimes(1);
   });
 
-  it("still terminalizes a typed callback with a broken checksum", async () => {
-    const { requests, processMessageWithReplyChain } = await routeCallback({
-      data: "tgcb1:00000:btntest_typed",
+  it("never offers an agent choice to plugin interactive handlers, even in their namespace", async () => {
+    const control = await routeCallback({ data: PLUGIN_OPAQUE_CLAIMED });
+    expect(pluginDispatch).toHaveBeenCalledTimes(1);
+    expect(control.processMessageWithReplyChain).not.toHaveBeenCalled();
+    expect(control.requests.map(({ method }) => method)).toEqual(["answerCallbackQuery"]);
+    pluginDispatch.mockClear();
+
+    const { processMessageWithReplyChain } = await routeCallback({
+      data: AGENT_CHOICE_PLUGIN_NAMESPACE,
     });
 
-    expect(requests.map(({ method }) => method)).toEqual([
-      "answerCallbackQuery",
-      "editMessageReplyMarkup",
-      "sendMessage",
-    ]);
-    expect(requests[2]?.payload).toMatchObject({ chat_id: CHAT_ID, text: UNAVAILABLE_TEXT });
-    expect(processMessageWithReplyChain).not.toHaveBeenCalled();
+    expect(pluginDispatch).not.toHaveBeenCalled();
+    expect(processMessageWithReplyChain.mock.calls[0]?.[0]?.msg.text).toBe(
+      "callback_data: agentchoice:approve-123",
+    );
   });
 
-  it("still terminalizes a typed callback after inline buttons are disabled", async () => {
-    const { requests, processMessageWithReplyChain } = await routeCallback({
-      data: buildTelegramOpaqueCallbackData("btntest_typed"),
-      inlineButtons: "off",
-    });
+  it("terminalizes an agent choice with a broken checksum", async () => {
+    expectTerminalized(await routeCallback({ data: "tgac1:00000:btntest_typed" }));
+  });
 
-    expect(requests.map(({ method }) => method)).toEqual([
-      "answerCallbackQuery",
-      "editMessageReplyMarkup",
-      "sendMessage",
-    ]);
-    expect(requests[2]?.payload).toMatchObject({ text: UNAVAILABLE_TEXT });
-    expect(processMessageWithReplyChain).not.toHaveBeenCalled();
+  it("terminalizes an agent choice after inline buttons are disabled", async () => {
+    expectTerminalized(await routeCallback({ data: AGENT_CHOICE, inlineButtons: "off" }));
+  });
+
+  it("keeps retired plugin-owned opaque controls terminal instead of reaching the agent", async () => {
+    expectTerminalized(await routeCallback({ data: PLUGIN_OPAQUE_RETIRED }), 1);
   });
 });

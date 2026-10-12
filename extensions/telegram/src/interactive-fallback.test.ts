@@ -3,6 +3,33 @@ import { canonicalizeTelegramPresentationPayload } from "./interactive-fallback.
 import { parseTelegramQuestionCallbackData } from "./question-callback-data.js";
 
 describe("canonicalizeTelegramPresentationPayload", () => {
+  it.each([
+    { owner: "agent" as const, callbackData: "tgac1:7ok4o:deploy prod" },
+    { owner: undefined, callbackData: "tgcb1:7ok4o:deploy prod" },
+  ])(
+    "encodes typed callbacks for the typedCallbackOwner=$owner send",
+    ({ owner, callbackData }) => {
+      const result = canonicalizeTelegramPresentationPayload(
+        {
+          text: "Deploy?",
+          presentation: {
+            blocks: [
+              {
+                type: "buttons",
+                buttons: [{ label: "Deploy", action: { type: "callback", value: "deploy prod" } }],
+              },
+            ],
+          },
+        },
+        owner ? { typedCallbackOwner: owner } : {},
+      );
+
+      expect(result.channelData?.telegram).toMatchObject({
+        buttons: [[{ text: "Deploy", callback_data: callbackData }]],
+      });
+    },
+  );
+
   it("preserves mixed presentation order while moving controls to Telegram buttons", () => {
     const result = canonicalizeTelegramPresentationPayload({
       text: "Top-level summary",

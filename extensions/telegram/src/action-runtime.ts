@@ -9,7 +9,6 @@ import {
   resolvePollMaxSelections,
   resolveReactionMessageId,
 } from "openclaw/plugin-sdk/channel-actions";
-import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-contract";
 import { normalizeOutboundLocation } from "openclaw/plugin-sdk/channel-inbound";
 import {
   buildOutboundSessionContext,
@@ -39,6 +38,7 @@ import {
   readTelegramSendMediaUrls,
   readTelegramThreadId,
 } from "./action-params.js";
+import type { TelegramActionRuntimeOptions } from "./action-runtime.types.js";
 import {
   appendTelegramDroppedControlFallback,
   buildTelegramControlDegradation,
@@ -56,7 +56,6 @@ import { resolveTelegramInteractiveTextFallback } from "./interactive-fallback.j
 import {
   resolveTelegramConversationReadChatId,
   resolveTelegramMessageMutationChatId,
-  type TelegramMessageMutationContext,
 } from "./message-topic-binding.js";
 import { rejectTelegramNativeButtonParams } from "./native-button-params.js";
 import { resolveTelegramPollVisibility } from "./poll-visibility.js";
@@ -98,9 +97,6 @@ const TELEGRAM_ACTION_ALIASES = {
 } as const;
 
 type TelegramActionName = (typeof TELEGRAM_ACTION_ALIASES)[keyof typeof TELEGRAM_ACTION_ALIASES];
-type ConversationReadInvocationOrigin = NonNullable<
-  ChannelMessageActionContext["conversationReadOrigin"]
->;
 function normalizeTelegramActionName(action: string): TelegramActionName {
   const normalized = TELEGRAM_ACTION_ALIASES[action as keyof typeof TELEGRAM_ACTION_ALIASES];
   if (!normalized) {
@@ -191,24 +187,7 @@ function normalizeTelegramDeliveryPin(params: Record<string, unknown>) {
 export async function handleTelegramAction(
   params: Record<string, unknown>,
   cfg: OpenClawConfig,
-  options?: {
-    mediaAccess?: ChannelMessageActionContext["mediaAccess"];
-    mediaLocalRoots?: readonly string[];
-    mediaReadFile?: (filePath: string) => Promise<Buffer>;
-    sessionKey?: string | null;
-    inboundEventKind?: string;
-    gatewayClientScopes?: readonly string[];
-    deliveryRetryOwner?: ChannelMessageActionContext["deliveryRetryOwner"];
-    onPlatformSendDispatch?: ChannelMessageActionContext["onPlatformSendDispatch"];
-    assertDirectAdapterHandoff?: ChannelMessageActionContext["assertDirectAdapterHandoff"];
-    skipQueue?: boolean;
-    conversationReadOrigin?: ConversationReadInvocationOrigin;
-    requesterAccountId?: string | null;
-    requesterSenderId?: string | null;
-    reply?: ChannelMessageActionContext["reply"];
-    progressSnapshot?: ChannelMessageActionContext["progressSnapshot"];
-    toolContext?: TelegramMessageMutationContext["toolContext"];
-  },
+  options?: TelegramActionRuntimeOptions,
 ): Promise<AgentToolResult<unknown>> {
   rejectTelegramNativeButtonParams(params);
   const action = normalizeTelegramActionName(readStringParam(params, "action", { required: true }));
@@ -245,6 +224,8 @@ export async function handleTelegramAction(
     resolveTelegramButtonsFromParams(params, presentation, {
       allowWebAppButtons: resolveTelegramTargetChatType(to) === "direct",
       onDroppedControl: (control) => droppedControls.push(control),
+      // Host-owned origin, never a model param: agent message-tool sends own their typed taps.
+      ...(options?.actionOrigin === "message-tool" ? { typedCallbackOwner: "agent" as const } : {}),
     });
   const requireInlineButtonsScope = () => {
     const scope = resolveTelegramInlineButtonsScope({ cfg, accountId });
