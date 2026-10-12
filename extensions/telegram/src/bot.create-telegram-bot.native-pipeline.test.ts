@@ -710,7 +710,7 @@ it("commits a first sticker description before model admission and never describ
         apiCalls.mock.calls
           .filter(([method]) => method === "sendMessage")
           .map(([, payload]) => {
-            const { text, message_thread_id } = requireRecord(payload);
+            const { text, message_thread_id } = requireRecord(payload, "sendMessage payload");
             return [text, message_thread_id];
           }),
       );
