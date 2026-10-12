@@ -27,6 +27,9 @@ export type TelegramDmTopicAdoptState = {
   pending: Map<string, PendingDmTopic>;
   // Service messages whose adoption window was spent: keyed by chat:createdMessageId.
   consumed: Map<string, number>;
+  // Decisions by chat:messageId, so a redelivery after a failed durable append
+  // (a freshly parsed object) still joins the topic it was admitted into.
+  adopted: Map<string, number>;
 };
 
 type TelegramDmTopicMessage = Pick<
@@ -52,7 +55,7 @@ function recordTelegramAdoptedDmThreadId(message: object, threadId: number): voi
 }
 
 export function createTelegramDmTopicAdoptState(): TelegramDmTopicAdoptState {
-  return { pending: new Map(), consumed: new Map() };
+  return { pending: new Map(), consumed: new Map(), adopted: new Map() };
 }
 
 export function getTelegramAdoptedDmThreadId(message: object): number | undefined {
@@ -119,6 +122,11 @@ export function adoptTelegramDmTopicMessage(
   if (!Number.isSafeInteger(messageId)) {
     return undefined;
   }
+  const decided = state.adopted.get(`${chat.id}:${messageId}`);
+  if (decided !== undefined) {
+    recordTelegramAdoptedDmThreadId(message, decided);
+    return decided;
+  }
   const userKey = `${chat.id}:${from.id}`;
   const ownThreadId = parseStrictPositiveInteger(message.message_thread_id);
   if (ownThreadId !== undefined) {
@@ -152,6 +160,8 @@ export function adoptTelegramDmTopicMessage(
   state.pending.delete(userKey);
   state.consumed.set(`${chat.id}:${pending.createdMessageId}`, messageId);
   pruneMapToMaxSize(state.consumed, TELEGRAM_DM_TOPIC_ADOPT_MAX_ENTRIES);
+  state.adopted.set(`${chat.id}:${messageId}`, pending.threadId);
+  pruneMapToMaxSize(state.adopted, TELEGRAM_DM_TOPIC_ADOPT_MAX_ENTRIES);
   recordTelegramAdoptedDmThreadId(message, pending.threadId);
   log.debug("adopted root DM message into client-created topic", {
     chatId: chat.id,

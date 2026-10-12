@@ -3,6 +3,7 @@
 // boundary (telegram-ingress-drain.test.ts).
 import type { Message } from "grammy/types";
 import { describe, expect, it } from "vitest";
+import { resolveTelegramMessageThreadSpec } from "./bot/helpers.js";
 import {
   adoptTelegramDmTopicMessage,
   createTelegramDmTopicAdoptState,
@@ -117,13 +118,16 @@ describe("adoptTelegramDmTopicMessage", () => {
     expect(adoptTelegramDmTopicMessage(rootMessage({ message_id: 502 }), state)).toBeUndefined();
   });
 
-  it("keeps adoption state per bot account", () => {
-    const botA = createTelegramDmTopicAdoptState();
-    const botB = createTelegramDmTopicAdoptState();
-    adoptTelegramDmTopicMessage(topicCreated(), botA);
-    // The same user's root message to another bot never consumes bot A's topic.
-    expect(adoptTelegramDmTopicMessage(rootMessage(), botB)).toBeUndefined();
-    expect(adoptTelegramDmTopicMessage(rootMessage(), botA)).toBe(500);
+  it("adopts a redelivered copy of the decided message after a failed durable append", () => {
+    const state = createTelegramDmTopicAdoptState();
+    adoptTelegramDmTopicMessage(topicCreated(), state);
+    expect(adoptTelegramDmTopicMessage(rootMessage(), state)).toBe(500);
+    // Telegram redelivers the same update as a freshly parsed object.
+    const redelivered = rootMessage();
+    expect(adoptTelegramDmTopicMessage(redelivered, state)).toBe(500);
+    expect(resolveTelegramMessageThreadSpec(redelivered)).toEqual({ id: 500, scope: "dm" });
+    // The decision stays per message: the next root message is a root message.
+    expect(adoptTelegramDmTopicMessage(rootMessage({ message_id: 502 }), state)).toBeUndefined();
   });
 
   it("bounds the pending and consumed caches", () => {
@@ -136,5 +140,6 @@ describe("adoptTelegramDmTopicMessage", () => {
     }
     expect(state.pending.size).toBe(0);
     expect(state.consumed.size).toBeLessThanOrEqual(512);
+    expect(state.adopted.size).toBeLessThanOrEqual(512);
   });
 });
