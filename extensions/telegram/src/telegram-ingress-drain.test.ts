@@ -617,6 +617,61 @@ describe("createTelegramIngressMonitor", () => {
     });
   });
 
+  it("keeps the adopted topic for a redelivery after every durable append attempt failed", async () => {
+    await withTempState(async (stateDir) => {
+      const eventId = String(501).padStart(16, "0");
+      const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
+        channelId: "telegram",
+        accountId: "default",
+        stateDir,
+      });
+      const enqueue = vi.spyOn(queue, "enqueue");
+      const dispatch = vi.fn(async (update: unknown) => {
+        const { update_id: updateId, message } = update as {
+          update_id: number;
+          message: Parameters<typeof resolveTelegramMessageThreadSpec>[0];
+        };
+        if (updateId === 501) {
+          expect(await queue.listClaims()).toMatchObject([
+            {
+              id: eventId,
+              laneKey: "telegram:1001:topic:500",
+              payload: { adoptedDmThreadId: 500 },
+            },
+          ]);
+          expect(resolveTelegramMessageThreadSpec(message)).toEqual({ id: 500, scope: "dm" });
+        }
+        return { kind: "completed" as const };
+      });
+      const monitor = createTelegramIngressMonitor({
+        queue,
+        getConfig: () => cfg,
+        accountId: "default",
+        botInfo: dmTopicsBotInfo,
+        dispatch,
+      });
+      try {
+        monitor.start();
+        await monitor.admit(dmTopicCreatedUpdate());
+        await monitor.waitForIdle();
+        // Every append attempt for the root message fails: the webhook answers 500 and
+        // Telegram redelivers the update as a freshly parsed object.
+        enqueue.mockRejectedValue(new Error("append failed"));
+        await expect(monitor.admit(dmRootMessageUpdate())).rejects.toThrow("append failed");
+        enqueue.mockRestore();
+        await monitor.admit(dmRootMessageUpdate());
+        await monitor.waitForIdle();
+        expect(
+          dispatch.mock.calls.map(([update]) => (update as { update_id: number }).update_id),
+        ).toEqual([500, 501]);
+        expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
+        expect(await queue.listPending({ limit: "all" })).toEqual([]);
+      } finally {
+        await monitor.stop();
+      }
+    });
+  });
+
   it("scopes client-created DM topic adoption to the receiving bot account", async () => {
     await withTempState(async (stateDir) => {
       const resolved: Record<
