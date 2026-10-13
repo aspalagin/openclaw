@@ -17,7 +17,8 @@ import {
   directCliClientForTests,
   firstRespondCall,
 } from "./send.test-helpers.js";
-import type { GatewayRequestContext, GatewayRequestHandler, RespondFn } from "./types.js";
+import { makeContext } from "./send.test-support.js";
+import type { GatewayRequestHandler, RespondFn } from "./types.js";
 
 const TOKEN = "123456:message-tool-callback-ownership";
 const CHAT_ID = "123";
@@ -60,7 +61,7 @@ afterEach(async () => {
 
 async function startBotApi() {
   const sent: Array<{ method: string; payload: Record<string, unknown> }> = [];
-  server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+  const handle = async (request: IncomingMessage, response: ServerResponse) => {
     const method = request.url?.split("/").at(-1) ?? "";
     const payload = await readJsonBody(request);
     sent.push({ method, payload });
@@ -74,6 +75,9 @@ async function startBotApi() {
             : true,
       }),
     );
+  };
+  server = createServer((request, response) => {
+    void handle(request, response);
   });
   await new Promise<void>((resolve) => {
     server!.listen(0, "127.0.0.1", resolve);
@@ -121,10 +125,10 @@ describe("Gateway message.action send through the registered Telegram action", (
         );
         const respond = vi.fn<RespondFn>();
         const context = {
+          ...makeContext(),
           getRuntimeConfig: () => cfg,
-          dedupe: new Map(),
           validateAgentRuntimeApprovalAuthority: () => true,
-        } as GatewayRequestContext;
+        };
         const suffix = caller.replace(/\s+/g, "-");
         await messageActionHandler({
           req: { type: "req", id: suffix, method: "message.action" },
