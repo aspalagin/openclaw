@@ -224,8 +224,6 @@
         --mount-fallback-ring: var(--ring, #ff5c5c);
 
         margin: 0;
-        /* The static browser notice must remain readable without CSS variables. */
-        color: #f4f4f5;
         color: var(--mount-fallback-text);
         background: var(--mount-fallback-bg);
         font-family: var(
@@ -444,6 +442,10 @@
         if ("noModule" in HTMLScriptElement.prototype) return;
         var fallback = document.getElementById("openclaw-mount-fallback");
         if (!fallback) return;
+
+        // CSS minification drops duplicate declarations, so keep the non-variable
+        // text color here for engines that cannot parse CSS custom properties.
+        fallback.style.color = "#f4f4f5";
 
         var title = document.getElementById("openclaw-mount-fallback-title");
         var summary = document.getElementById("openclaw-mount-fallback-summary");
