@@ -16,7 +16,8 @@ import { resetTelegramClientOptionsCacheForTests } from "./send.js";
 const pluginDispatch = vi.hoisted(() =>
   vi.fn(async ({ data }: { data: string }) => ({ handled: data.startsWith("agentchoice:") })),
 );
-vi.mock("./interactive-dispatch.js", () => ({
+vi.mock("./interactive-dispatch.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./interactive-dispatch.js")>()),
   dispatchTelegramPluginInteractiveHandler: pluginDispatch,
 }));
 
