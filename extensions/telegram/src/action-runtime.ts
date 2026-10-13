@@ -43,6 +43,7 @@ import {
   appendTelegramDroppedControlFallback,
   buildTelegramControlDegradation,
   resolveTelegramButtonsFromParams,
+  resolveTelegramTypedCallbackOwner,
   type TelegramDroppedControl,
 } from "./button-types.js";
 import type { TelegramDraftPreview } from "./draft-stream-message.js";
@@ -224,8 +225,7 @@ export async function handleTelegramAction(
     resolveTelegramButtonsFromParams(params, presentation, {
       allowWebAppButtons: resolveTelegramTargetChatType(to) === "direct",
       onDroppedControl: (control) => droppedControls.push(control),
-      // Host-owned origin, never a model param: agent message-tool sends own their typed taps.
-      ...(options?.actionOrigin === "message-tool" ? { typedCallbackOwner: "agent" as const } : {}),
+      ...resolveTelegramTypedCallbackOwner(options?.actionOrigin),
     });
   const requireInlineButtonsScope = () => {
     const scope = resolveTelegramInlineButtonsScope({ cfg, accountId });

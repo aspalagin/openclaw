@@ -72,6 +72,20 @@ export type TelegramButtonBuildOptions = {
   typedCallbackOwner?: "agent" | "plugin";
 };
 
+/**
+ * Resolves typed callback ownership from the host-owned send origin. Only a
+ * model-authored `message` tool send (`actionOrigin: "message-tool"`, set by the
+ * host and never read from params or payload data) makes the agent the owner;
+ * every other producer keeps plugin-owned opaque envelopes. Every Telegram
+ * rendering step (presentation render, payload send, action runtime) must go
+ * through this so ownership is identical wherever buttons are materialized.
+ */
+export function resolveTelegramTypedCallbackOwner(
+  actionOrigin: string | undefined,
+): Pick<TelegramButtonBuildOptions, "typedCallbackOwner"> {
+  return actionOrigin === "message-tool" ? { typedCallbackOwner: "agent" } : {};
+}
+
 export function appendTelegramDroppedControlFallback(
   text: string,
   controls: readonly TelegramDroppedControl[],

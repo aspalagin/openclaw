@@ -14,6 +14,7 @@ import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { sanitizeAssistantVisibleText } from "openclaw/plugin-sdk/text-chunking";
 import {
   resolveTelegramInlineButtons,
+  resolveTelegramTypedCallbackOwner,
   type TelegramButtonBuildOptions,
   type TelegramInlineButtons,
 } from "./button-types.js";
@@ -393,6 +394,8 @@ export function createTelegramOutboundAdapter(
         { ...payload, presentation },
         {
           allowWebAppButtons: parseTelegramTarget(ctx.to ?? "").chatType === "direct",
+          // Buttons are materialized here, before sendPayload; ownership must be applied now.
+          ...resolveTelegramTypedCallbackOwner(ctx.actionOrigin),
           richTables: resolveTelegramRichMessages({
             cfg: ctx.cfg,
             accountId: ctx.accountId,
@@ -515,8 +518,7 @@ export function createTelegramOutboundAdapter(
           mediaReadFile: params.mediaReadFile,
           forceDocument: params.forceDocument ?? false,
         },
-        // Host-owned origin, never payload data: agent message-tool sends own their typed taps.
-        ...(params.actionOrigin === "message-tool" ? { typedCallbackOwner: "agent" as const } : {}),
+        ...resolveTelegramTypedCallbackOwner(params.actionOrigin),
       });
       return attachChannelToResult("telegram", toTelegramOutboundResult(result));
     },
