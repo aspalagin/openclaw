@@ -71,7 +71,7 @@ export function getValidatedHostReadText(buffer?: Buffer): string | undefined {
 // Consume complete quoted values so a literal `>` inside one cannot end the tag.
 // Do not skip DTD internal subsets: their entity values can contain decoy root tags.
 const FICTIONBOOK_ROOT_RE =
-  /^\uFEFF?(?:\s*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE(?:[^>"'\[]|"[^"]*"|'[^']*')*>))*\s*<(?:(?<prefix>[A-Za-z_][\w.-]*):)?FictionBook(?=[\s/>])(?<attributes>(?:[^>"']|"[^"]*"|'[^']*')*)>/u;
+  /^\uFEFF?(?:\s*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE(?:[^>"'[]|"[^"]*"|'[^']*')*>))*\s*<(?:(?<prefix>[A-Za-z_][\w.-]*):)?FictionBook(?=[\s/>])(?<attributes>(?:[^>"']|"[^"]*"|'[^']*')*)>/u;
 const FICTIONBOOK_NAMESPACE = "http://www.gribuser.ru/xml/fictionbook/2.0";
 const XML_ROOT_ATTRIBUTE_RE =
   /\s+(?<name>[A-Za-z_:][\w:.-]*)\s*=\s*(?<quote>["'])(?<value>[\s\S]*?)\k<quote>/guy;
