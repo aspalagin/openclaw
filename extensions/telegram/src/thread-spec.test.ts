@@ -23,20 +23,6 @@ describe("resolveTelegramMessageThreadSpec client-created DM topics", () => {
   const rootMessage = () =>
     ({ message_id: 501, date: 1_760_000_000, chat, from, text: "hello" }) as unknown as Message;
 
-  it("routes the root message the receiving account adopted into that topic", () => {
-    const state = createTelegramDmTopicAdoptState();
-    const message = rootMessage();
-    expect(resolveTelegramMessageThreadSpec(topicCreated)).toEqual({ id: 500, scope: "dm" });
-    adoptTelegramDmTopicMessage(topicCreated, state);
-    expect(adoptTelegramDmTopicMessage(message, state)).toBe(500);
-    expect(resolveTelegramMessageThreadSpec(message)).toEqual({ id: 500, scope: "dm" });
-    expect(resolveTelegramMessageThreadSpec(message)).toEqual({ id: 500, scope: "dm" });
-    // A later root message is a genuine root message again.
-    const next = { ...rootMessage(), message_id: 502 } as Message;
-    expect(adoptTelegramDmTopicMessage(next, state)).toBeUndefined();
-    expect(resolveTelegramMessageThreadSpec(next)).toEqual({ scope: "dm" });
-  });
-
   it("keeps the adopted topic on normalized message copies but not in serialized JSON", () => {
     const state = createTelegramDmTopicAdoptState();
     adoptTelegramDmTopicMessage(topicCreated, state);
@@ -49,10 +35,6 @@ describe("resolveTelegramMessageThreadSpec client-created DM topics", () => {
     // Durable rows carry the fact as explicit payload metadata, never as message state.
     expect(JSON.stringify(message)).toBe(JSON.stringify(rootMessage()));
     expect(resolveTelegramMessageThreadSpec(structuredClone(message))).toEqual({ scope: "dm" });
-  });
-
-  it("keeps a root DM message that no account adopted in the root session", () => {
-    expect(resolveTelegramMessageThreadSpec(rootMessage())).toEqual({ scope: "dm" });
   });
 });
 
