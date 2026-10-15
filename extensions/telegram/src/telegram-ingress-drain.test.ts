@@ -481,11 +481,8 @@ describe("createTelegramIngressMonitor", () => {
       const queueOptions = { channelId: "telegram", accountId: "default", stateDir };
       const eventId = String(501).padStart(16, "0");
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>(queueOptions);
-      let finishDispatch!: () => void;
-      const dispatchGate = new Promise<void>((resolve) => {
-        finishDispatch = resolve;
-      });
-      let ownerSignal: AbortSignal | undefined;
+      const dispatchGate = deferred();
+      const dispatchEntered = deferred<AbortSignal>();
       const beforeRestart = createTelegramIngressMonitor({
         queue,
         getConfig: () => cfg,
@@ -494,28 +491,35 @@ describe("createTelegramIngressMonitor", () => {
         dispatch: async (update, lifecycle) => {
           if ((update as { update_id: number }).update_id === 501) {
             // Hold the root message until the owner is aborted (restart before dispatch).
-            ownerSignal = lifecycle.abortSignal;
+            dispatchEntered.resolve(lifecycle.abortSignal);
             const participant = createTelegramSpooledReplayDeferredParticipant(
               "test:dm-topic-adopt-restart",
             );
-            await dispatchGate;
+            await dispatchGate.promise;
             participant?.settle({ kind: "completed" });
           }
           return { kind: "completed" as const };
         },
       });
       beforeRestart.start();
-      await beforeRestart.admit(dmTopicCreatedUpdate());
-      await beforeRestart.admit(dmRootMessageUpdate());
-      await vi.waitFor(() => expect(ownerSignal).toBeDefined());
-      // The decision is made once at admission and persisted with the row.
-      expect(await queue.listClaims()).toMatchObject([
-        { id: eventId, laneKey: "telegram:1001:topic:500", payload: { adoptedDmThreadId: 500 } },
-      ]);
-      const stopped = beforeRestart.stop();
-      await vi.waitFor(() => expect(ownerSignal?.aborted).toBe(true));
-      finishDispatch();
-      await stopped;
+      let stopped: Promise<void> | undefined;
+      try {
+        await beforeRestart.admit(dmTopicCreatedUpdate());
+        await beforeRestart.admit(dmRootMessageUpdate());
+        const ownerSignal = await dispatchEntered.promise;
+        // The decision is made once at admission and persisted with the row.
+        expect(await queue.listClaims()).toMatchObject([
+          { id: eventId, laneKey: "telegram:1001:topic:500", payload: { adoptedDmThreadId: 500 } },
+        ]);
+        const aborted = new Promise<void>((resolve) => {
+          ownerSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        stopped = beforeRestart.stop();
+        await aborted;
+      } finally {
+        dispatchGate.resolve();
+        await (stopped ?? beforeRestart.stop());
+      }
       // Restart before dispatch: in-memory adoption state and message identity are gone.
       await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
@@ -547,6 +551,54 @@ describe("createTelegramIngressMonitor", () => {
         expect(await replayQueue.listPending({ limit: "all" })).toEqual([]);
       } finally {
         await afterRestart.stop();
+      }
+    });
+  });
+
+  it("does not rearm adoption when the service message is redelivered after a native topic message", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
+        channelId: "telegram",
+        accountId: "default",
+        stateDir,
+      });
+      const root = dmRootMessageUpdate();
+      const nativeTopicUpdate = {
+        update_id: 501,
+        message: { ...root.message, message_thread_id: 500, is_topic_message: true },
+      };
+      const laterRootUpdate = {
+        update_id: 502,
+        message: { ...root.message, message_id: 502 },
+      };
+      const resolved = new Map<number, ReturnType<typeof resolveTelegramMessageThreadSpec>>();
+      const monitor = createTelegramIngressMonitor({
+        queue,
+        getConfig: () => cfg,
+        accountId: "default",
+        botInfo: dmTopicsBotInfo,
+        dispatch: async (update) => {
+          const { update_id: updateId, message } = update as {
+            update_id: number;
+            message: Parameters<typeof resolveTelegramMessageThreadSpec>[0];
+          };
+          resolved.set(updateId, resolveTelegramMessageThreadSpec(message));
+          return { kind: "completed" as const };
+        },
+      });
+      try {
+        monitor.start();
+        await monitor.admit(dmTopicCreatedUpdate());
+        await monitor.admit(nativeTopicUpdate);
+        // Telegram redelivers the spent service message: admission inspects it again.
+        await monitor.admit(dmTopicCreatedUpdate()).catch(() => undefined);
+        await monitor.admit(laterRootUpdate);
+        await monitor.waitForIdle();
+        expect(resolved.get(501)).toEqual({ id: 500, scope: "dm" });
+        expect(resolved.get(502)).toEqual({ scope: "dm" });
+        expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
+      } finally {
+        await monitor.stop();
       }
     });
   });

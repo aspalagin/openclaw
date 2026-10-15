@@ -139,9 +139,15 @@ export function adoptTelegramDmTopicMessage(
         });
         pruneMapToMaxSize(state.pending, TELEGRAM_DM_TOPIC_ADOPT_MAX_ENTRIES);
       }
-    } else if (state.pending.get(userKey)?.threadId === ownThreadId) {
-      // The client delivered the first message inside the topic: nothing to adopt.
-      state.pending.delete(userKey);
+    } else {
+      const pending = state.pending.get(userKey);
+      if (pending?.threadId === ownThreadId) {
+        // The client delivered the first message inside the topic: nothing to adopt,
+        // and a redelivered service message must not rearm the window.
+        state.pending.delete(userKey);
+        state.consumed.set(`${chat.id}:${pending.createdMessageId}`, messageId);
+        pruneMapToMaxSize(state.consumed, TELEGRAM_DM_TOPIC_ADOPT_MAX_ENTRIES);
+      }
     }
     return undefined;
   }
