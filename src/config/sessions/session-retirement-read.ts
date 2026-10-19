@@ -12,7 +12,7 @@ import type {
   SessionRetirementReadOperation,
   SessionRetirementReadResult,
 } from "./session-retirement-read.types.js";
-import { maintenanceLane } from "./session-transcript-worker-resources.js";
+import { targetDiscoveryLane } from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
@@ -34,9 +34,6 @@ export async function listSessionEntryKeysReadOnly(
   return withSessionRetirementReaders([reader], async () => {
     const result = await reader.read({ operation: "keys", ordered: true });
     reader.assertCurrent();
-    if (result.operation !== "keys") {
-      throw new Error("Session key inventory returned another retirement operation");
-    }
     return result.keys;
   });
 }
@@ -59,9 +56,12 @@ export function captureSessionRetirementReader(
       assertDatabasePathIdentity(ownerStorePath, ownerIdentity);
     }
   };
-  const read = async (
+  function read<Operation extends SessionRetirementReadOperation["operation"]>(
+    request: Extract<SessionRetirementReadOperation, { operation: Operation }>,
+  ): Promise<Extract<SessionRetirementReadResult, { operation: Operation }>>;
+  async function read(
     request: SessionRetirementReadOperation,
-  ): Promise<SessionRetirementReadResult> => {
+  ): Promise<SessionRetirementReadResult> {
     assertCurrent();
     if (!identity.key.startsWith("file:")) {
       return request.operation === "keys"
@@ -77,9 +77,10 @@ export function captureSessionRetirementReader(
         assertCurrent();
         return result;
       },
-      maintenanceLane,
+      // Ordered scans retain writer admission through reader failure and eviction cleanup.
+      targetDiscoveryLane,
     );
-  };
+  }
   return { database, assertCurrent, read };
 }
 
