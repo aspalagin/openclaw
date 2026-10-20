@@ -477,7 +477,7 @@ describe("createTelegramIngressMonitor", () => {
   const dmTopicsBotInfo = { ...telegramBotInfoForTest, has_topics_enabled: true };
 
   it("adopts a client-created DM topic at admission and keeps it through restart replay", async () => {
-    await withTempState(async (stateDir) => {
+    await withTempState(async ({ stateDir }) => {
       const queueOptions = { channelId: "telegram", accountId: "default", stateDir };
       const eventId = String(501).padStart(16, "0");
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>(queueOptions);
@@ -556,7 +556,7 @@ describe("createTelegramIngressMonitor", () => {
   });
 
   it("does not rearm adoption when the service message is redelivered after a native topic message", async () => {
-    await withTempState(async (stateDir) => {
+    await withTempState(async ({ stateDir }) => {
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
         channelId: "telegram",
         accountId: "default",
@@ -604,7 +604,7 @@ describe("createTelegramIngressMonitor", () => {
   });
 
   it("replays legacy spool rows without adoptedDmThreadId unchanged and restores it from new rows", async () => {
-    await withTempState(async (stateDir) => {
+    await withTempState(async ({ stateDir }) => {
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
         channelId: "telegram",
         accountId: "default",
@@ -670,14 +670,19 @@ describe("createTelegramIngressMonitor", () => {
   });
 
   it("keeps the adopted topic for a redelivery after every durable append attempt failed", async () => {
-    await withTempState(async (stateDir) => {
+    await withTempState(async ({ stateDir }) => {
       const eventId = String(501).padStart(16, "0");
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
         channelId: "telegram",
         accountId: "default",
         stateDir,
       });
-      const enqueue = vi.spyOn(queue, "enqueue");
+      // Durable admission appends through enqueueAndClaim on an idle drain, else enqueue.
+      const appends = [
+        vi.spyOn(queue, "enqueue"),
+        // SAFETY: The SQLite test queue implements enqueueAndClaim; the spy only widens typing.
+        vi.spyOn(queue as Required<typeof queue>, "enqueueAndClaim"),
+      ];
       const dispatch = vi.fn(async (update: unknown) => {
         const { update_id: updateId, message } = update as {
           update_id: number;
@@ -708,9 +713,13 @@ describe("createTelegramIngressMonitor", () => {
         await monitor.waitForIdle();
         // Every append attempt for the root message fails: the webhook answers 500 and
         // Telegram redelivers the update as a freshly parsed object.
-        enqueue.mockRejectedValue(new Error("append failed"));
+        for (const append of appends) {
+          append.mockRejectedValue(new Error("append failed"));
+        }
         await expect(monitor.admit(dmRootMessageUpdate())).rejects.toThrow("append failed");
-        enqueue.mockRestore();
+        for (const append of appends) {
+          append.mockRestore();
+        }
         await monitor.admit(dmRootMessageUpdate());
         await monitor.waitForIdle();
         expect(
@@ -725,7 +734,7 @@ describe("createTelegramIngressMonitor", () => {
   });
 
   it("scopes client-created DM topic adoption to the receiving bot account", async () => {
-    await withTempState(async (stateDir) => {
+    await withTempState(async ({ stateDir }) => {
       const resolved: Record<
         "a" | "b",
         Array<ReturnType<typeof resolveTelegramMessageThreadSpec>>
