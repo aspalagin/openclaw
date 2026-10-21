@@ -1,4 +1,9 @@
-import type { ProgressContinuationDraft } from "../../../channels/progress-continuation.js";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type {
+  ProgressContinuationDraft,
+  ProgressContinuationPlan,
+} from "../../../channels/progress-continuation.js";
+import { normalizeAgentPlanSteps } from "../../../channels/streaming.js";
 import { onAgentEventForRun, type AgentEventPayload } from "../../../infra/agent-events.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
 import { getSubagentRunsForChildSession } from "./subagent-registry-memory.js";
@@ -79,6 +84,20 @@ function projectActivity(event: AgentEventPayload, itemId: string): ProgressItem
   };
 }
 
+/** The requester's own checklist (`progress_card`), as a live turn's plan bridge reads it. */
+function projectPlan(event: AgentEventPayload): ProgressContinuationPlan | undefined {
+  const { data } = event;
+  if (event.stream !== "plan" || data.phase !== "update") {
+    return undefined;
+  }
+  const explanation = normalizeOptionalString(data.explanation);
+  return {
+    steps: normalizeAgentPlanSteps(data.steps) ?? [],
+    ...(explanation ? { explanation } : {}),
+    ...(data.explanationFormat === "plain" ? { explanationFormat: "plain" as const } : {}),
+  };
+}
+
 function projectChild(entry: SubagentRunRecord): ProgressItem {
   const paused = entry.pauseReason === "sessions_yield";
   const ended = entry.execution.status === "terminal" && !paused;
@@ -105,6 +124,16 @@ function follow(live: LiveDraft, runId: string, itemId: string): () => void {
     const item = projectActivity(event, itemId);
     if (item) {
       live.draft.push(item);
+    }
+  });
+}
+
+/** Only the requester's runs update the checklist; a child's plan stays private to it. */
+function followPlan(live: LiveDraft, runId: string): () => void {
+  return onAgentEventForRun(runId, (event) => {
+    const plan = projectPlan(event);
+    if (plan) {
+      live.draft.pushPlan?.(plan);
     }
   });
 }
@@ -198,7 +227,7 @@ export function adoptSubagentProgressDraft(
   return true;
 }
 
-/** Show the resumed requester's work on the same draft while its settle wake runs. */
+/** Show the resumed requester's work and checklist on the same draft while its settle wake runs. */
 export async function withSubagentProgressDraft<T>(
   batch: readonly SubagentRunRecord[],
   wakeRunId: string,
@@ -210,10 +239,12 @@ export async function withSubagentProgressDraft<T>(
   }
   liveByWake.set(wakeRunId, live);
   const stopEvents = follow(live, wakeRunId, "requester:tool");
+  const stopPlan = followPlan(live, wakeRunId);
   try {
     return await run();
   } finally {
     stopEvents();
+    stopPlan();
     liveByWake.delete(wakeRunId);
   }
 }

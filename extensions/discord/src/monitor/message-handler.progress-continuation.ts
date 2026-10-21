@@ -62,18 +62,26 @@ export function retainDiscordProgressDraft(params: {
     );
   };
   let started = false;
+  const render = (work: () => Promise<unknown>) =>
+    enqueue(async () => {
+      if (retired) {
+        return;
+      }
+      if (!started) {
+        started = true;
+        await compositor.start();
+      }
+      await work();
+    });
   return {
-    push: (item) =>
-      enqueue(async () => {
-        if (retired) {
-          return;
-        }
-        if (!started) {
-          started = true;
-          await compositor.start();
-        }
-        await compositor.pushItemEvent(item);
-      }),
+    push: (item) => render(() => compositor.pushItemEvent(item)),
+    pushPlan: (plan) =>
+      render(() =>
+        compositor.pushPlanProgress(plan.steps, {
+          explanation: plan.explanation,
+          explanationFormat: plan.explanationFormat,
+        }),
+      ),
     retire: () => {
       if (retired) {
         return;
