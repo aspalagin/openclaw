@@ -102,8 +102,8 @@ function answerWakes(
   return wakes;
 }
 
-type TestDraft = { push: Mock; pushPlan: Mock; retire: Mock };
-const newDraft = (): TestDraft => ({ push: vi.fn(), pushPlan: vi.fn(), retire: vi.fn() });
+type TestDraft = { push: Mock; updatePlan: Mock; retire: Mock };
+const newDraft = (): TestDraft => ({ push: vi.fn(), updatePlan: vi.fn(), retire: vi.fn() });
 
 async function adoptCohort(children = ["a", "b"], origin?: Parameters<typeof yieldCohort>[2]) {
   const spawns = await yieldCohort("parent-turn", children, origin);
@@ -318,7 +318,7 @@ it("shows the resumed requester's checklist but never a child's", async () => {
   });
 
   await endRun("a");
-  expect(draft.pushPlan).toHaveBeenCalledExactlyOnceWith({ steps, explanation: "1/2 complete" });
+  expect(draft.updatePlan).toHaveBeenCalledExactlyOnceWith(steps, { explanation: "1/2 complete" });
   expectCard(draft);
 });
 

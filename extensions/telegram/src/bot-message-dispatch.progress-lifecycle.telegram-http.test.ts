@@ -398,10 +398,10 @@ describe("Telegram progress custody and delivery outcomes through HTTP", () => {
       },
     });
     const [retainedId] = [...visibleMessages.keys()];
-    assert(retainedId !== undefined && draft.pushPlan);
+    assert(retainedId !== undefined && draft.updatePlan);
     expect(visibleMessages.get(retainedId)).toContain("0/2 complete");
 
-    draft.pushPlan({ steps: steps("completed", "in_progress"), explanation: "1/2 complete" });
+    draft.updatePlan(steps("completed", "in_progress"), { explanation: "1/2 complete" });
     await eventually(() => visibleMessages.get(retainedId)).toContain("1/2 complete");
 
     draft.retire();

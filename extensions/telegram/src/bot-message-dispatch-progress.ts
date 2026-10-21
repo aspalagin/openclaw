@@ -255,13 +255,8 @@ export function retainProgressDraft(turn: Turn, stream: TelegramDraftStream) {
   return {
     push: (item: Parameters<Turn["progressCompositor"]["pushItemEvent"]>[0]) =>
       enqueue(() => compositor.pushItemEvent(item)),
-    pushPlan: (plan: CallbackPayload<"onPlanUpdate">) =>
-      enqueue(() =>
-        compositor.pushPlanProgress(plan.steps, {
-          explanation: plan.explanation,
-          explanationFormat: plan.explanationFormat,
-        }),
-      ),
+    updatePlan: (...args: Parameters<Turn["progressCompositor"]["pushPlanProgress"]>) =>
+      enqueue(() => compositor.pushPlanProgress(...args)),
     retire: () => {
       retired = true;
       enqueue(async () => {

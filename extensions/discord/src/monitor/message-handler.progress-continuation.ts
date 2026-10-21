@@ -75,13 +75,7 @@ export function retainDiscordProgressDraft(params: {
     });
   return {
     push: (item) => render(() => compositor.pushItemEvent(item)),
-    pushPlan: (plan) =>
-      render(() =>
-        compositor.pushPlanProgress(plan.steps, {
-          explanation: plan.explanation,
-          explanationFormat: plan.explanationFormat,
-        }),
-      ),
+    updatePlan: (steps, options) => render(() => compositor.pushPlanProgress(steps, options)),
     retire: () => {
       if (retired) {
         return;

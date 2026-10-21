@@ -1,8 +1,5 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type {
-  ProgressContinuationDraft,
-  ProgressContinuationPlan,
-} from "../../../channels/progress-continuation.js";
+import { readStringValue } from "@openclaw/normalization-core/string-coerce";
+import type { ProgressContinuationDraft } from "../../../channels/progress-continuation.js";
 import { normalizeAgentPlanSteps } from "../../../channels/streaming.js";
 import { onAgentEventForRun, type AgentEventPayload } from "../../../infra/agent-events.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
@@ -84,20 +81,6 @@ function projectActivity(event: AgentEventPayload, itemId: string): ProgressItem
   };
 }
 
-/** The requester's own checklist (`progress_card`), as a live turn's plan bridge reads it. */
-function projectPlan(event: AgentEventPayload): ProgressContinuationPlan | undefined {
-  const { data } = event;
-  if (event.stream !== "plan" || data.phase !== "update") {
-    return undefined;
-  }
-  const explanation = normalizeOptionalString(data.explanation);
-  return {
-    steps: normalizeAgentPlanSteps(data.steps) ?? [],
-    ...(explanation ? { explanation } : {}),
-    ...(data.explanationFormat === "plain" ? { explanationFormat: "plain" as const } : {}),
-  };
-}
-
 function projectChild(entry: SubagentRunRecord): ProgressItem {
   const paused = entry.pauseReason === "sessions_yield";
   const ended = entry.execution.status === "terminal" && !paused;
@@ -119,21 +102,26 @@ function projectChild(entry: SubagentRunRecord): ProgressItem {
   };
 }
 
-function follow(live: LiveDraft, runId: string, itemId: string): () => void {
+function follow(
+  live: LiveDraft,
+  runId: string,
+  itemId: string,
+  audience: "child" | "requester",
+): () => void {
   return onAgentEventForRun(runId, (event) => {
+    // A private child's plan must never replace the requester's public checklist.
+    if (audience === "requester" && event.stream === "plan") {
+      if (event.data.phase === "update") {
+        live.draft.updatePlan?.(normalizeAgentPlanSteps(event.data.steps), {
+          explanation: readStringValue(event.data.explanation),
+          ...(event.data.explanationFormat === "plain" ? { explanationFormat: "plain" } : {}),
+        });
+      }
+      return;
+    }
     const item = projectActivity(event, itemId);
     if (item) {
       live.draft.push(item);
-    }
-  });
-}
-
-/** Only the requester's runs update the checklist; a child's plan stays private to it. */
-function followPlan(live: LiveDraft, runId: string): () => void {
-  return onAgentEventForRun(runId, (event) => {
-    const plan = projectPlan(event);
-    if (plan) {
-      live.draft.pushPlan?.(plan);
     }
   });
 }
@@ -148,7 +136,7 @@ function track(live: LiveDraft, entries: readonly SubagentRunRecord[]): void {
       childSessionKey: entry.childSessionKey,
       childAgentId: entry.childAgentId,
       row: entry,
-      stopEvents: follow(live, entry.runId, `${id}:tool`),
+      stopEvents: follow(live, entry.runId, `${id}:tool`, "child"),
     });
     liveByTask.set(id, live);
     live.draft.push(projectChild(entry));
@@ -185,7 +173,7 @@ function reconcile(live: LiveDraft): void {
     }
     if (row.runId !== member.row.runId) {
       member.stopEvents();
-      member.stopEvents = follow(live, row.runId, `${id}:tool`);
+      member.stopEvents = follow(live, row.runId, `${id}:tool`, "child");
     }
     member.row = row;
     live.draft.push(projectChild(row));
@@ -238,13 +226,11 @@ export async function withSubagentProgressDraft<T>(
     return await run();
   }
   liveByWake.set(wakeRunId, live);
-  const stopEvents = follow(live, wakeRunId, "requester:tool");
-  const stopPlan = followPlan(live, wakeRunId);
+  const stopEvents = follow(live, wakeRunId, "requester:tool", "requester");
   try {
     return await run();
   } finally {
     stopEvents();
-    stopPlan();
     liveByWake.delete(wakeRunId);
   }
 }

@@ -333,12 +333,10 @@ describe("Discord draft preview REST lifecycle", () => {
     await advancePreview(stream, 1_200);
     expectCard(visible, ["▸ Fetch the recording", "▢ Transcribe it"]);
 
-    draft.pushPlan?.({
-      steps: [
-        { step: "Fetch the recording", status: "completed" },
-        { step: "Transcribe it", status: "in_progress" },
-      ],
-    });
+    draft.updatePlan?.([
+      { step: "Fetch the recording", status: "completed" },
+      { step: "Transcribe it", status: "in_progress" },
+    ]);
     await advancePreview(stream, 1_200);
     expectCard(visible, ["▸ Transcribe it"], ["▸ Fetch the recording", "▢ Transcribe it"]);
   });
